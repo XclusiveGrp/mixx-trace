@@ -125,7 +125,8 @@
         (al.growing ? ' \u00b7 level is rising' : '') + (al.n > 1 ? ' \u00b7 ' + (al.n - 1) + ' more' : '') + '</span>');
       a.className = 'alert' + (fb ? '' : ' ring'); a.hidden = false;
     } else if (run) {
-      setHTML('alert', '<span class="tag">CLEAR</span><span class="fix">Listening on ' + esc(fr.levels ? fr.levels.meas.name : 'the measurement mic') + '. No sustained tones right now.</span>');
+      setHTML('alert', '<span class="tag">CLEAR</span><span class="fix">Listening on ' + esc(fr.levels ? fr.levels.meas.name : 'the measurement mic') + '. No sustained tones right now.' +
+        (fr.counts && fr.counts.events ? ' ' + fr.counts.events + ' logged earlier.' : '') + '</span>');
       a.className = 'alert calm'; a.hidden = false;
     } else a.hidden = true;
 
@@ -150,7 +151,7 @@
   }
 
   // ----------------------------------------------------------------- feedback
-  function ageText(a) { return a < 2 ? 'now' : a < 90 ? Math.round(a) + ' s ago' : Math.round(a / 60) + ' min ago'; }
+  function ageText(a) { return 'stopped ' + (a < 90 ? Math.max(1, Math.round(a)) + ' s ago' : Math.round(a / 60) + ' min ago'); }
   function renderFeedback(fr) {
     const run = fr.status.mode !== 'stopped';
     setHTML('rta-empty', run ? '' : emptyState('stopped'));
@@ -178,7 +179,7 @@
       h += '<article class="ev ' + e.status + (e.active ? ' active' : '') + '" data-testid="event">' +
         '<div class="ev-top"><span class="ev-f num">' + fmtHz(e.f) + '</span>' +
         '<span class="badge ' + e.status + '"><b>' + (e.status === 'feedback' ? 'Feedback' : 'Ringing') + '</b></span>' +
-        '<span class="ev-meta num">' + (e.active ? (e.growing ? 'rising' : 'now') : ageText(e.age)) + '</span></div>' +
+        '<span class="ev-meta num">' + (e.active ? (e.growing ? 'sounding, rising' : 'sounding now') : ageText(e.age)) + '</span></div>' +
         '<div class="ev-note"><span class="num">peak ' + e.max.toFixed(0).replace('-', MINUS) + ' dBFS' + (e.hits > 1 ? ' \u00b7 \u00d7' + e.hits : '') + '</span> \u00b7 note ' + esc(e.note.replace('-', MINUS)) + ' \u00b7 1/3-oct band ' + fmtHz(e.iso) + '</div>' +
         '<div class="ev-fix"><span class="k">Cut</span><span class="num">Bell ' + fmtHz(e.notch.f) + ' \u00b7 ' + sgn(e.notch.gain, 0) + ' dB \u00b7 Q ' + e.notch.q + '</span></div>' +
         '<div class="ev-where">' + esc(e.where) + '</div></article>';
