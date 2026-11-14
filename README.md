@@ -37,6 +37,9 @@ You build the app once on your own Mac. A Mac app cannot be built on another kin
 one built on your own Mac opens without the "downloaded from the internet" block.
 
 1. Install Python from [python.org/downloads](https://www.python.org/downloads/) if you have not already.
+   The build also needs Apple's free command line developer tools. If they are missing, the build
+   script opens Apple's installer for them: click Install, wait for it to finish, then run
+   the script again. You can also start that yourself with `xcode-select --install`.
 2. Open Terminal, type `cd ` (with a space), drag the Mixx Trace folder onto the window, press
    Return, then run `bash build-mac-app.command`. It needs internet and takes a few minutes. It
    downloads the build tools into the folder, builds `Mixx Trace.app`, checks it, and offers to put
@@ -240,8 +243,11 @@ library and window parts loading, with the Linux audio library supplied by hand)
 app's start-up code was run with a real app window (pywebview on its Linux window engine, not the
 Mac one), where the interface loaded, the demo ran, and Export session and Report saved into
 Downloads, and closing the window shut everything down; and the Mac versions of every package it
-needs were confirmed to exist (Python 3.12, 3.14 and 3.15 on Apple silicon, 3.13 on Intel). The build
-script itself, the Mac window, the permission prompts and the icon in Finder have not been run on a Mac.
+needs were confirmed to exist (Python 3.12, 3.14 and 3.15 on Apple silicon, 3.13 on Intel). On a
+real Mac (macOS 26, Apple silicon, Python 3.15) the build has so far been seen to get as far as
+assembling the program, where it stopped for want of Apple's command line developer tools; the
+script now checks for them first. The finished app, the Mac window, the permission prompts and
+the icon in Finder have not yet been seen running on a Mac.
 
 It has **not** yet been run against real audio hardware, a real console, a real room, or on a
 Windows or Mac machine: it was developed and checked on Linux, with care taken over the parts

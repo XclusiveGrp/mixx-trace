@@ -17,6 +17,20 @@ if [ "$(uname -s)" != "Darwin" ]; then
   finish 1 "This script builds the Mac app, so it has to run on a Mac."
 fi
 
+# Assembling a Mac app needs Apple's command line developer tools (lipo, install_name_tool). They are free.
+need_apple_tools() {
+  xcode-select --install >/dev/null 2>&1
+  echo
+  echo "Apple's command line developer tools are needed to build the app, and this Mac does not have them yet."
+  echo "A window from Apple should have opened (it may be behind this one). Click Install and agree to the license."
+  echo "It downloads from Apple and is free. Depending on your connection it can take a while."
+  finish 1 "When it says the software was installed, run this again:  bash build-mac-app.command"
+}
+DEVDIR="$(xcode-select -p 2>/dev/null)"
+if [ -z "$DEVDIR" ] || [ ! -d "$DEVDIR" ]; then
+  need_apple_tools
+fi
+
 # Newest well-supported Python first; the plain python3 from Apple's developer tools is the last resort.
 PY=""
 for c in python3.14 python3.13 python3.15 python3.12 python3.11 python3; do
@@ -45,6 +59,9 @@ echo "2/4  Building the app (a few minutes)..."
 rm -rf build dist
 if ! .venv-build/bin/python -m PyInstaller --noconfirm --clean --log-level WARN \
       --distpath dist --workpath build packaging/mac/MixxTrace.spec >>"$LOG" 2>&1 || [ ! -d "$APP" ]; then
+  if grep -q -e "No developer tools were found" -e "invalid active developer path" "$LOG"; then
+    need_apple_tools
+  fi
   tail -n 25 "$LOG"
   finish 1 "The build failed. Send the file $LOG so it can be fixed."
 fi
