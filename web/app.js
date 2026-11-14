@@ -1,4 +1,4 @@
-/* TuneTrace interface. Talks to the local engine over a small JSON API. */
+/* Mixx Trace interface. Talks to the local engine over a small JSON API. */
 (function () {
   'use strict';
   const raw = window.__API_BASE__ || '';
@@ -11,11 +11,12 @@
   const fmtHz = window.fmtHz;
 
   const S = { view: 'feedback', frame: null, st: null, ver: -1, fail: 0, connected: true, devices: null,
-    chFilter: 'all', rtaTop: -20, magMid: null, html: {}, chRows: 0, startedOnce: false };
+    chFilter: 'all', rtaTop: -20, magMid: null, alMid: null, html: {}, chRows: 0, startedOnce: false,
+    plan: null, planWhat: '', sending: false, reading: false, refit: 0 };
   const C = {};
   function loadColors() {
     ['--trace-live', '--trace-best', '--trace-pred', '--trace-target', '--trace-coh', '--color-crit', '--color-warn', '--color-faint',
-      '--trace-1', '--trace-2', '--trace-3', '--trace-4', '--trace-5', '--trace-6'].forEach((n) => { C[n] = css(n); });
+      '--trace-1', '--trace-2', '--trace-3', '--trace-4', '--trace-5', '--trace-6', '--color-ok', '--color-muted'].forEach((n) => { C[n] = css(n); });
   }
   loadColors();
   const traceColor = (i) => C['--trace-' + ((i % 6) + 1)];
@@ -26,16 +27,17 @@
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return r;
   }
-  async function cmd(name, body) {
+  async function cmd(name, body, quiet) {
     try {
       const r = await fetch(API + '/api/cmd', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(Object.assign({ cmd: name }, body || {})) });
       const j = await r.json();
+      if (quiet) return j;
       if (!j.ok) toast(j.msg || 'That did not work.', true);
       else if (j.msg) toast(j.msg);
       return j;
     } catch (e) {
-      toast('Lost contact with the TuneTrace engine.', true);
+      toast('Lost contact with the Mixx Trace engine.', true);
       return { ok: false };
     }
   }
@@ -57,6 +59,8 @@
     coh: new window.TTPlot($('plot-coh'), { yMin: 0, yMax: 1, yStep: 0.5, xLabels: false, edgeLabels: true,
       fmt: (v) => Math.round(v * 100) + '%', fmtVal: (v) => Math.round(v * 100) + '%' }),
     phase: new window.TTPlot($('plot-phase'), { yMin: -180, yMax: 180, yStep: 90, unit: '°', wrap: true, zero: 0, decimals: 0, edgeLabels: true }),
+    alMag: new window.TTPlot($('plot-al-mag'), { yMin: -30, yMax: 12, yStep: 6, unit: 'dB', xLabels: false }),
+    alPhase: new window.TTPlot($('plot-al-phase'), { yMin: -180, yMax: 180, yStep: 90, unit: '°', wrap: true, zero: 0, decimals: 0, edgeLabels: true }),
   };
 
   // --------------------------------------------------------------------- loop
@@ -83,7 +87,7 @@
     $('status-text').textContent = 'Engine not reachable';
     const n = $('notice');
     n.className = 'notice err'; n.hidden = false;
-    n.textContent = 'TuneTrace cannot reach its audio engine. If you closed the TuneTrace window in Terminal, start it again; this page reconnects by itself.';
+    n.textContent = 'Mixx Trace cannot reach its audio engine. If you closed the Mixx Trace window in Terminal, start it again; this page reconnects by itself.';
     $('alert').hidden = true; $('meters').hidden = true;
   }
 
@@ -113,7 +117,7 @@
     const n = $('notice');
     if (s.error) { n.className = 'notice err'; n.textContent = s.error; n.hidden = false; }
     else if (s.demo_only) { n.className = 'notice'; n.hidden = false;
-      n.textContent = 'Hosted preview: this is a simulated show, so you can try every tool. To measure a real system, run TuneTrace on your own computer with your interface connected.'; }
+      n.textContent = 'Hosted preview: this is a simulated show, so you can try every tool. To measure a real system, run Mixx Trace on your own computer with your interface connected.'; }
     else n.hidden = true;
 
     const a = $('alert');
@@ -141,8 +145,8 @@
     const s = S.frame.status;
     if (kind === 'stopped') {
       return '<h3>No input running</h3><p>' + (s.live
-        ? 'Start your audio interface to listen to the room, or load the demo signal to see how TuneTrace works.'
-        : 'Load the demo signal to see how TuneTrace works.') + '</p><div class="row">' +
+        ? 'Start your audio interface to listen to the room, or load the demo signal to see how Mixx Trace works.'
+        : 'Load the demo signal to see how Mixx Trace works.') + '</p><div class="row">' +
         (s.live ? '<button class="btn primary" data-act="start">Start input</button>' : '') +
         '<button class="btn' + (s.live ? '' : ' primary') + '" data-act="demo">Demo signal</button></div>';
     }
@@ -245,6 +249,7 @@
       dn.className = 'step-note ' + (inv ? 'bad' : 'good');
     } else if (d.result) { dn.textContent = d.result.msg; dn.className = 'step-note bad'; }
     else { dn.textContent = d.samples ? 'Delay set to ' + d.ms.toFixed(2) + ' ms.' : 'Not aligned yet. Play signal and press Find delay.'; dn.className = 'step-note' + (d.samples ? '' : ' bad'); }
+    if (run && d.track && !d.pending && d.moves) dn.textContent += ' Followed the mic ' + d.moves + ' time' + (d.moves === 1 ? '' : 's') + '.';
 
     // quality
     const qb = $('q-bar'), qn = $('q-note');
@@ -295,8 +300,192 @@
     if (!e.bands.length) h = '<p class="step-note good">Already within 1 dB of the target. No EQ needed.</p>';
     h += '<p class="eq-sum">Fitted to ' + esc(e.source) + ' at ' + esc(e.time) + ', ' + fmtHz(e.f_lo) + ' to ' + fmtHz(e.f_hi) + '. Deviation from target: <span class="num">' + e.before.toFixed(1) + ' dB</span> now, <b class="num">' + e.after.toFixed(1) + ' dB</b> predicted.</p>' +
       '<p class="eq-sum">Enter these on the output or matrix EQ feeding this system. ' + esc(con.out_note) + (e.bands.length > con.out_bands ? ' This fit uses more bands than that.' : '') + ' Re-measure after applying.</p>' +
-      '<div class="row" style="margin-top:var(--space-3)"><button class="btn small" data-act="copy-eq">Copy table</button><button class="btn small" data-act="report">Full report</button></div>';
+      remoteEq(e) +
+      '<div class="row" style="margin-top:var(--space-3)">' +
+      (st.osc.mode !== 'off' && e.bands.length ? '<button class="btn small primary" data-act="osc-eq" data-testid="btn-osc-eq">Send to console\u2026</button>' : '') +
+      '<button class="btn small" data-act="copy-eq">Copy table</button><button class="btn small" data-act="report">Full report</button></div>';
     setHTML('eq-result', h);
+  }
+
+  function undoButton(what) {
+    const u = S.st.osc.undo;
+    return u && u.what === what ? '<button class="btn small" data-act="osc-undo" data-testid="btn-osc-undo">Undo this send</button>' : '';
+  }
+  function remoteEq(e) {
+    const o = S.st.osc, p = e.pushed;
+    if (!e.bands.length) return '';
+    let h = '';
+    if (S.refit) {
+      h += '<div class="sent out"><span>The console only answered for ' + S.refit + ' EQ bands on this output, and this fit uses ' + e.bands.length + '.</span>' +
+        '<div class="row"><button class="btn small" data-act="refit" data-testid="btn-refit">Re-fit with ' + S.refit + ' bands</button></div></div>';
+    }
+    if (p) {
+      h += '<div class="sent' + (p.bypassed ? ' out' : '') + '" data-testid="eq-sent"><span><b>' + (p.bypassed ? 'Switched out' : 'On the console') + '</b> \u00b7 sent to ' + esc(p.target) +
+        ' on ' + esc(p.console) + ' at ' + esc(p.time) + '. Measure again to confirm it landed.</span><div class="row">' +
+        '<div class="seg" role="group" aria-label="Output EQ in or out"><button data-act="eq-in" aria-pressed="' + (!p.bypassed) + '">EQ in</button>' +
+        '<button data-act="eq-out" aria-pressed="' + (!!p.bypassed) + '">EQ out</button></div>' + undoButton('eq') + '</div></div>';
+    } else if (o.mode !== 'off' && o.undo && o.undo.what === 'eq') {
+      h += '<div class="sent out" data-testid="eq-stale"><span><b>Not sent yet</b> \u00b7 ' + esc(o.undo.target) + ' still holds the EQ sent at ' + esc(o.undo.time) +
+        '. Send replaces it with this fit; Undo puts the output back as it was before that send.</span><div class="row">' + undoButton('eq') + '</div></div>';
+    } else if (o.mode === 'off') {
+      h += '<p class="eq-sum">To send these from here instead of typing them in, turn on Console remote in Setup.</p>';
+    } else {
+      h += '<p class="eq-sum">Console remote is on: Send writes these to ' + esc(o.out_type) + ' ' + o.out_n + ' after showing you every change.</p>';
+    }
+    return h;
+  }
+
+  // -------------------------------------------------------------------- align
+  const JOB_TEXT = { settle: 'Letting the signal settle\u2026', delay: 'Finding the arrival\u2026', avg: 'Averaging\u2026' };
+  function median(src, grid) {
+    const v = src.filter((x, i) => x !== null && grid[i] > 200 && grid[i] < 4000).sort((a, b) => a - b);
+    return v.length ? v[v.length >> 1] : null;
+  }
+  function renderAlign(fr) {
+    const st = S.st, al = st.align, v = al.view || {}, r = al.result, run = fr.status.mode !== 'stopped';
+    const tf = run && fr.tf && fr.tf.mag && fr.delay && fr.delay.samples && !fr.delay.pending ? fr.tf : null;
+    const have = !!(v.a || v.b);
+    setHTML('al-empty', !run && !have ? emptyState('stopped') : (run && fr.tf_ok === false && !have ? emptyState('same')
+      : (run && !have && !tf && !fr.align_job ? '<h3>Nothing measured yet</h3><p>Press Measure ' + esc(al.a_name) + ' on the right to capture the first system.</p>' : '')));
+    $('al-src').textContent = run && fr.levels && fr.tf_ok ? fr.levels.meas.name + ' vs ' + fr.levels.ref.name : '';
+
+    const ref = v.a || (tf ? tf.mag : null) || v.b;
+    const mid = ref ? median(ref, st.grid) : null;
+    if (mid !== null && (S.alMid === null || Math.abs(mid - S.alMid) > 4)) S.alMid = Math.round(mid / 3) * 3;
+    const m0 = S.alMid === null ? 0 : S.alMid;
+    plots.alMag.setRange(m0 - 30, m0 + 12, 6);
+
+    const cA = C['--trace-1'], cB = C['--trace-4'], series = [], legend = [], ph = [];
+    if (tf) { series.push({ data: tf.mag, color: C['--trace-live'], width: 1.2, alpha: 0.75, name: 'Live', mask: tf.coh }); legend.push(['Live', C['--trace-live']]); }
+    if (v.a) { series.push({ data: v.a, color: cA, width: 1.4, name: al.a_name, mask: v.coh_a }); legend.push([al.a_name, cA]); }
+    if (v.b) { series.push({ data: v.b, color: cB, width: 1.4, name: al.b_name, mask: v.coh_b }); legend.push([al.b_name, cB]); }
+    if (v.sum_now) { series.push({ data: v.sum_now, color: C['--trace-target'], dash: [6, 5], width: 1.6, name: 'Together now' }); legend.push(['Together now', C['--trace-target'], true]); }
+    if (v.sum_fix) { series.push({ data: v.sum_fix, color: C['--trace-pred'], width: 2.2, name: 'Together, aligned' }); legend.push(['Together, aligned', C['--trace-pred']]); }
+    const marks = r ? [r.f_lo, r.f_hi].map((f) => ({ f, color: C['--color-faint'], dash: [3, 4], width: 1, alpha: 0.9 })) : [];
+    plots.alMag.set(st.grid, series, marks);
+    setHTML('al-legend', legend.map((l) => '<span style="color:' + l[1] + '"><i' + (l[2] ? ' class="dash"' : '') + '></i><span style="color:var(--color-muted)">' + esc(l[0]) + '</span></span>').join(''));
+    if (v.ph_a) ph.push({ data: v.ph_a, color: cA, width: 1.4, name: al.a_name });
+    if (v.ph_b) ph.push({ data: v.ph_b, color: cB, width: 1.4, name: al.b_name + (r ? ' now' : '') });
+    if (v.ph_b_fix) ph.push({ data: v.ph_b_fix, color: C['--trace-pred'], width: 1.8, dash: [6, 4], name: al.b_name + ' corrected' });
+    if (!ph.length && tf) ph.push({ data: tf.phase, color: C['--trace-live'], width: 1.2, name: 'Live', mask: tf.coh });
+    plots.alPhase.set(st.grid, ph, marks);
+
+    const j = fr.align_job, busy = !!j;
+    $('btn-al-a').disabled = busy || !run; $('btn-al-b').disabled = busy || !run;
+    $('al-job').hidden = !busy;
+    if (busy) {
+      $('al-job-bar').style.width = j.pct + '%';
+      $('al-job-text').textContent = (j.slot === 'a' ? al.a_name : al.b_name) + ': ' + (JOB_TEXT[j.stage] || 'Working\u2026');
+    }
+    const demo = fr.status.mode === 'demo';
+    $('demo-system-wrap').hidden = !demo;
+    if (demo && fr.status.demo_system && document.activeElement !== $('demo-system')) $('demo-system').value = fr.status.demo_system;
+    const how = demo ? 'Demo: pressing Measure switches the simulated PA to that system for you. On a real rig, mute everything except the system you are measuring, play pink noise, and leave the mic where it is for both.'
+      : 'Mute everything except the system you are measuring, play pink noise, and leave the mic where it is for both.';
+    if ($('al-how').textContent !== how) $('al-how').textContent = how;
+  }
+  function slotState(c) {
+    return c ? 'Captured at ' + c.time + ' \u00b7 coherence ' + Math.round(c.quality * 100) + '%' : 'Not measured yet';
+  }
+  function renderAlignStatic() {
+    const st = S.st, al = st.align, r = al.result, o = st.osc;
+    setVal('al-a-name', al.a_name); setVal('al-b-name', al.b_name); setVal('al-a-n', al.a_n); setVal('al-b-n', al.b_n);
+    for (const k of ['a', 'b']) {
+      const el = $('al-' + k + '-type');
+      if (document.activeElement !== el) el.innerHTML = opt('', 'Not set', !al[k + '_type']) + o.types.map((t) => opt(t, t, al[k + '_type'] === t)).join('');
+      $('btn-al-' + k).textContent = 'Measure ' + al[k + '_name'];
+      const sn = $('al-' + k + '-state');
+      sn.textContent = slotState(al[k]); sn.className = 'step-note' + (al[k] ? ' good' : '');
+    }
+    const er = $('al-error'); er.hidden = !al.error; er.textContent = al.error || '';
+    if (document.activeElement !== $('demo-system')) $('demo-system').innerHTML = Object.entries(st.demo_systems).map(([k, n]) => opt(k, n, false)).join('');
+
+    if (!r) {
+      setHTML('al-result', '<p class="step-note">' + (al.a || al.b ? 'Now measure the other system. The mic must not move in between.'
+        : 'Measure both systems. Mixx Trace then works out the delay and polarity that make them add best where they overlap.') + '</p>' +
+        (al.a || al.b ? '<div class="row" style="margin-top:var(--space-3)"><button class="btn small ghost" data-act="al-clear">Clear</button></div>' : ''));
+      return;
+    }
+    const who = r.who === 'a' ? al.a_name : al.b_name, inTime = r.ms < 0.05, nothing = inTime && !r.invert;
+    let h = '<div class="al-big"><span class="k">' + (inTime ? 'Timing' : 'Delay ' + esc(who) + ' by') + '</span>' +
+      (inTime ? '<span class="num big">in time</span>' : '<span class="num big" data-testid="al-ms">' + r.ms.toFixed(2) + '</span><span class="unit">ms</span>') + '</div>';
+    if (!inTime) h += '<div class="al-facts num">' + r.m.toFixed(2) + ' m \u00b7 ' + r.ft.toFixed(1) + ' ft \u00b7 ' + Math.round(r.samples) + ' samples</div>';
+    h += '<div class="al-pol"><span>Polarity of ' + esc(al.b_name) + '</span><b' + (r.invert ? ' class="flip"' : '') + ' data-testid="al-pol">' + (r.invert ? 'Flip it' : 'Leave as is') + '</b></div>';
+    h += '<p class="eq-sum">They overlap from ' + fmtHz(r.f_lo) + ' to ' + fmtHz(r.f_hi) + '. ' +
+      (r.gain >= 0.3 ? 'With this they come up <b class="num">' + r.gain.toFixed(1) + ' dB</b> through that region' +
+        (r.short < 0.3 ? ', which is all they can give.' : ', <span class="num">' + r.short.toFixed(1) + ' dB</span> short of a perfect sum.')
+        : 'They already add within <span class="num">' + r.now_short.toFixed(1) + ' dB</span> of a perfect sum.') + '</p>';
+    if (r.alt) {
+      const aw = r.alt.who === 'a' ? al.a_name : al.b_name;
+      h += '<p class="eq-sum">Close call: ' + (r.alt.invert ? 'flipping ' + esc(al.b_name) + ' and delaying ' : 'delaying ') + esc(aw) + ' by <span class="num">' + r.alt.ms.toFixed(2) + ' ms</span>' +
+        (r.alt.invert ? '' : ' with no flip') + ' adds up within <span class="num">' + r.alt.worse.toFixed(2) + ' dB</span> of this over the same region. ' +
+        'This one was picked because the two phase traces stay together over a wider range. Listen to both if in doubt.</p>';
+    }
+    if (r.pushed) {
+      h += '<div class="sent" data-testid="al-sent"><span><b>On the console</b> \u00b7 sent at ' + esc(r.pushed) + '. Unmute both systems and press Check: the live trace should follow the green line.</span>' +
+        '<div class="row"><button class="btn small" data-act="al-check" data-testid="btn-al-check">Check live</button>' + undoButton('align') + '</div></div>';
+    } else if (!nothing && o.mode === 'off') {
+      h += '<p class="eq-sum">Set this on the console by hand, or turn on Console remote in Setup to send it from here. Then unmute both systems and press Check.</p>';
+    }
+    h += '<div class="row" style="margin-top:var(--space-3)">' +
+      (!r.pushed && !nothing && o.mode !== 'off' ? '<button class="btn small primary" data-act="osc-align" data-testid="btn-osc-align">Send to console\u2026</button>' : '') +
+      (!r.pushed && !nothing && o.mode === 'off' ? '<button class="btn small" data-act="al-check" data-testid="btn-al-check">Check live</button>' : '') +
+      '<button class="btn small ghost" data-act="al-clear">Clear</button></div>';
+    setHTML('al-result', h);
+  }
+
+  // ----------------------------------------------------------- console remote
+  const dash = (t) => esc(t).replace(/-(?=\d)/g, MINUS);
+  function renderOsc() {
+    const o = S.st.osc;
+    $('osc-forced').hidden = !o.forced_sim;
+    setVal('osc-mode', o.mode); $('osc-mode').disabled = o.forced_sim;
+    $('osc-net').hidden = o.mode !== 'udp';
+    setVal('osc-host', o.host); setVal('osc-send-port', o.send_port); setVal('osc-listen-port', o.listen_port); setVal('osc-out-n', o.out_n);
+    if (document.activeElement !== $('osc-out-type')) $('osc-out-type').innerHTML = o.types.map((t) => opt(t, t, o.out_type === t)).join('');
+    $('btn-osc-test').disabled = o.mode === 'off';
+    const inf = $('osc-info');
+    inf.textContent = o.mode === 'off' ? 'Remote is off. Nothing can be sent.' : (o.info ? 'Answered as ' + o.info.name + ' at ' + o.info.time + '.' : 'Not tested yet.');
+    inf.className = 'step-note' + (o.mode !== 'off' && o.info ? ' good' : '');
+  }
+  async function openPreview(what) {
+    if (S.reading || S.sending) return;
+    S.reading = true;
+    if (S.st.osc.mode === 'udp') toast('Reading the console\u2026');
+    const r = await cmd('osc_preview', { what }, true);
+    S.reading = false;
+    if (!r.ok) { if (r.msg) toast(r.msg, !r.same); if (r.refit) { S.refit = r.refit; S.html['eq-result'] = null; renderEq(); } return; }
+    S.refit = 0; S.plan = r; S.planWhat = what;
+    $('osc-title').textContent = r.title;
+    $('osc-sim').hidden = !r.sim;
+    $('osc-meta').innerHTML = 'Console: <b>' + esc(r.console) + '</b>' + (r.sim ? '. A stand-in: nothing leaves this computer.' : '');
+    $('osc-warn').innerHTML = r.warnings.map((w) => '<p class="osc-warn">' + dash(w) + '</p>').join('');
+    $('osc-rows').innerHTML = r.rows.map((x) => '<tr' + (x.skip ? ' class="same"' : '') + '><td>' + esc(x.label) + '</td><td class="num">' + dash(x.now) +
+      '</td><td class="num new">' + (x.skip ? 'no change' : dash(x.new)) + '</td></tr>').join('');
+    const vals = r.n + ' value' + (r.n === 1 ? '' : 's');
+    $('osc-foot').textContent = vals + ' will be written one at a time, then read back to check' + (r.seconds ? ' (about ' + r.seconds + ' s)' : '') +
+      '. Settings already at the right value are left alone. The values shown under Now are kept so you can undo.' +
+      (what === 'eq' ? ' Bands are assigned from the top down: console band 1 takes the highest frequency.' : '');
+    const b = $('osc-send'); b.disabled = false; b.textContent = (what === 'undo' ? 'Restore ' : 'Send ') + vals;
+    $('osc-cancel').disabled = false;
+    const dlg = $('osc-dlg');
+    if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
+  }
+  async function sendPlan() {
+    const p = S.plan;
+    if (!p || S.sending) return;
+    S.sending = true;
+    $('osc-send').disabled = true; $('osc-cancel').disabled = true; $('osc-send').textContent = 'Sending\u2026';
+    const r = await cmd('osc_push', { token: p.token, confirm: true }, true);
+    S.sending = false; S.plan = null;
+    $('osc-dlg').close();
+    if (r.msg || r.ok) toast(r.msg || 'Sent.', !r.ok || !!(r.mismatch && r.mismatch.length));
+    if (r.ok && S.planWhat !== 'eq' && S.st.align.result && S.frame && S.frame.status.mode === 'demo') checkLive();
+  }
+  // both systems playing: lock the reference delay to the combined arrival so the live trace is valid
+  async function checkLive() {
+    if (S.frame && S.frame.status.mode === 'demo') await cmd('demo_system', { system: 'ab' }, true);
+    await cmd('find_delay', undefined, true);
   }
 
   // ----------------------------------------------------------------- channels
@@ -377,9 +566,9 @@
     const s = st.settings;
     const off = $('live-off');
     if (st.demo_only) {
-      off.hidden = false; off.innerHTML = 'This hosted preview runs the built-in demo only. Live input, the signal generator and saved sessions work when TuneTrace runs on your own computer.';
+      off.hidden = false; off.innerHTML = 'This hosted preview runs the built-in demo only. Live input, the signal generator and saved sessions work when Mixx Trace runs on your own computer.';
     } else if (d.error) {
-      off.hidden = false; off.innerHTML = 'Live audio is unavailable on this computer: ' + esc(d.error) + '<br>Install it with <code>python3 -m pip install sounddevice</code> and start TuneTrace again.';
+      off.hidden = false; off.innerHTML = 'Live audio is unavailable on this computer: ' + esc(d.error) + '<br>Install it with <code>' + (/Win/i.test(navigator.platform || '') ? 'py' : 'python3') + ' -m pip install sounddevice</code> and start Mixx Trace again.';
     } else off.hidden = true;
     const dis = st.demo_only || !!d.error;
     ['dev-in', 'dev-sr', 'dev-ch', 'btn-start-2', 'btn-refresh', 'gen-dev', 'gen-ch', 'gen-type', 'gen-freq', 'gen-level', 'btn-gen'].forEach((id) => { $(id).disabled = dis; });
@@ -424,7 +613,7 @@
   function setVal(id, v) { const el = $(id); if (document.activeElement !== el) el.value = String(v); }
   function renderStatic() {
     const st = S.st, s = st.settings;
-    $('foot-ver').textContent = 'TuneTrace ' + st.version;
+    $('foot-ver').textContent = 'Mixx Trace ' + st.version;
     setVal('rta-smooth', s.rta_smooth); setVal('tf-smooth', s.tf_smooth); setVal('tf-avg', s.avg);
     seg('sens', s.sens);
     // target
@@ -444,7 +633,8 @@
     h = opt('auto', 'Best trace if captured, else live', s.eq.source === 'auto') + opt('live', 'Live measurement', s.eq.source === 'live');
     for (const t of st.traces) h += opt(t.id, t.name, s.eq.source === t.id);
     if (document.activeElement !== $('eq-source')) $('eq-source').innerHTML = h;
-    renderTraces(); renderEq();
+    $('delay-track').checked = !!s.track;
+    renderTraces(); renderEq(); renderAlignStatic(); renderOsc();
     // setup
     h = '';
     for (const [k, c] of Object.entries(st.consoles)) h += opt(k, c.label, s.console === k);
@@ -465,7 +655,9 @@
     renderHeader(fr);
     if (S.view === 'feedback') renderFeedback(fr);
     else if (S.view === 'tune') renderTune(fr);
+    else if (S.view === 'align') renderAlign(fr);
     else if (S.view === 'channels') renderChannels(fr);
+    if (S.sending && fr.osc_busy) $('osc-send').textContent = 'Sending\u2026 ' + fr.osc_busy.sent;
   }
 
   // ------------------------------------------------------------------ actions
@@ -516,7 +708,7 @@
   }
   function eqText() {
     const e = S.st.eq; if (!e) return '';
-    const L = ['System EQ from TuneTrace, fitted to ' + e.source];
+    const L = ['System EQ from Mixx Trace, fitted to ' + e.source];
     e.bands.forEach((b, i) => L.push('Band ' + (i + 1) + '\tBell\t' + fmtHz(b.f) + '\t' + (b.gain > 0 ? '+' : '') + b.gain.toFixed(1) + ' dB\tQ ' + b.q.toFixed(1)));
     return L.join('\n');
   }
@@ -539,6 +731,11 @@
       const a = b.dataset.act;
       if (a === 'start') startLive(); else if (a === 'demo') startDemo(); else if (a === 'setup') show('setup');
       else if (a === 'copy-eq') copyText(eqText()); else if (a === 'report') openReport();
+      else if (a === 'osc-eq') openPreview('eq'); else if (a === 'osc-align') openPreview('align'); else if (a === 'osc-undo') openPreview('undo');
+      else if (a === 'eq-in' || a === 'eq-out') cmd('osc_eq_in', { on: a === 'eq-in' });
+      else if (a === 'refit') { const n = S.refit; S.refit = 0; cmd('eq_refit', { bands: n }).then((r) => { if (r.ok) toast('Re-fitted with ' + n + ' bands. Press Send to console again.'); }); }
+      else if (a === 'al-clear') { S.alMid = null; cmd('align_clear'); }
+      else if (a === 'al-check') checkLive();
     });
     // feedback
     $('rta-smooth').addEventListener('change', (e) => cmd('set', { rta_smooth: +e.target.value }));
@@ -549,6 +746,7 @@
     $('tf-avg').addEventListener('change', (e) => cmd('set', { avg: e.target.value }));
     $('btn-reset-avg').addEventListener('click', () => cmd('reset_avg'));
     $('btn-delay').addEventListener('click', () => cmd('find_delay'));
+    $('delay-track').addEventListener('change', (e) => cmd('set', { track: e.target.checked }));
     $('btn-capture').addEventListener('click', async () => { const r = await cmd('capture'); if (r.ok && !r.msg) toast('Trace captured.'); });
     $('btn-demo-move').addEventListener('click', async () => {
       const r = await cmd('demo_move');
@@ -576,6 +774,27 @@
     $('eq-source').addEventListener('change', (e) => cmd('set', { eq: { source: /^\d+$/.test(e.target.value) ? +e.target.value : e.target.value } }));
     $('btn-eq').addEventListener('click', async () => { const r = await cmd('auto_eq'); if (r.ok) toast(r.n ? r.n + ' EQ band' + (r.n === 1 ? '' : 's') + ' suggested.' : 'Already on target.'); });
     $('btn-eq-clear').addEventListener('click', () => cmd('eq_clear'));
+    $('btn-eq-clear').addEventListener('click', () => { S.refit = 0; });
+    // align
+    for (const k of ['a', 'b']) {
+      $('btn-al-' + k).addEventListener('click', () => cmd('align_measure', { slot: k }));
+      $('al-' + k + '-name').addEventListener('change', (e) => cmd('osc_set', { [k + '_name']: e.target.value }));
+      $('al-' + k + '-type').addEventListener('change', (e) => cmd('osc_set', { [k + '_type']: e.target.value }));
+      $('al-' + k + '-n').addEventListener('change', (e) => cmd('osc_set', { [k + '_n']: +e.target.value || 1 }));
+    }
+    $('btn-al-cancel').addEventListener('click', () => cmd('align_cancel'));
+    $('demo-system').addEventListener('change', (e) => { cmd('demo_system', { system: e.target.value }); e.target.blur(); });
+    // console remote
+    const oscField = (id, key, num) => $(id).addEventListener('change', async (e) => {
+      const r = await cmd('osc_set', { [key]: num ? (+e.target.value || 0) : e.target.value });
+      if (!r.ok) e.target.value = String(S.st.osc[key]);
+    });
+    oscField('osc-mode', 'mode'); oscField('osc-host', 'host'); oscField('osc-send-port', 'send_port', true);
+    oscField('osc-listen-port', 'listen_port', true); oscField('osc-out-type', 'out_type'); oscField('osc-out-n', 'out_n', true);
+    $('btn-osc-test').addEventListener('click', async (e) => { e.target.disabled = true; await cmd('osc_test'); e.target.disabled = false; });
+    $('osc-send').addEventListener('click', sendPlan);
+    $('osc-cancel').addEventListener('click', () => { if (!S.sending) { S.plan = null; $('osc-dlg').close(); } });
+    $('osc-dlg').addEventListener('cancel', (e) => { if (S.sending) e.preventDefault(); else S.plan = null; });
     // channels
     $('ch-filter').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; S.chFilter = b.dataset.v; seg('ch-filter', S.chFilter); if (S.frame) renderFrame(); });
     $('btn-report').addEventListener('click', openReport);
@@ -606,14 +825,14 @@
     });
     $('btn-cal-clear').addEventListener('click', () => cmd('cal_clear'));
     $('btn-export').addEventListener('click', async () => {
-      try { download('tunetrace-session-' + stamp() + '.json', await (await api('/api/session.json')).text(), 'application/json'); }
+      try { download('mixxtrace-session-' + stamp() + '.json', await (await api('/api/session.json')).text(), 'application/json'); }
       catch (e) { toast('Could not export the session.', true); }
     });
     $('session-file').addEventListener('change', (e) => {
       const f = e.target.files[0]; if (!f) return;
       const rd = new FileReader();
       rd.onload = async () => {
-        let data; try { data = JSON.parse(String(rd.result)); } catch (err) { toast('That file is not a TuneTrace session.', true); return; }
+        let data; try { data = JSON.parse(String(rd.result)); } catch (err) { toast('That file is not a Mixx Trace session.', true); return; }
         const r = await cmd('session_import', { data }); if (r.ok) toast('Session imported.');
       };
       rd.readAsText(f); e.target.value = '';
@@ -621,7 +840,7 @@
     // dialog
     $('dlg-close').addEventListener('click', () => $('dlg').close());
     $('dlg-copy').addEventListener('click', () => copyText($('dlg-body').textContent));
-    $('dlg-download').addEventListener('click', () => download('tunetrace-report-' + stamp() + '.txt', $('dlg-body').textContent));
+    $('dlg-download').addEventListener('click', () => download('mixxtrace-report-' + stamp() + '.txt', $('dlg-body').textContent));
     $('dlg').addEventListener('click', (e) => { if (e.target === $('dlg')) $('dlg').close(); });
   }
 

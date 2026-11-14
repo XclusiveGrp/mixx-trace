@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TuneTrace — feedback finder and system tuning</title>
-<meta name="description" content="Find problem frequencies, tune a PA against a reference, and get channel-by-channel fixes for your console.">
+<title>Mixx Trace — feedback finder, system tuning and alignment</title>
+<meta name="description" content="Find problem frequencies, tune and time-align a PA against a reference, send the result to a DiGiCo console, and get channel-by-channel fixes.">
 <meta name="color-scheme" content="dark">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
@@ -20,12 +20,12 @@
 <a class="skip" href="#main">Skip to content</a>
 
 <header class="top">
-  <div class="brand" aria-label="TuneTrace">
+  <div class="brand" aria-label="Mixx Trace">
     <svg class="logo" viewBox="0 0 32 32" width="28" height="28" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M3 21c4 0 5-9 9-9s3 13 7 13 4-18 7-18 2 9 3 9"/>
       <path d="M3 27h26" opacity=".35"/>
     </svg>
-    <span class="brand-name">TuneTrace</span>
+    <span class="brand-name">Mixx Trace</span>
   </div>
 
   <div class="status" id="status" data-testid="status" role="status" aria-live="polite">
@@ -58,7 +58,8 @@
 
 <nav class="tabs" role="tablist" aria-label="Views">
   <button role="tab" class="tab" id="tab-feedback" data-view="feedback" data-testid="tab-feedback" aria-selected="true" aria-controls="view-feedback">Feedback<span class="tab-count" id="tab-fb-count" hidden></span></button>
-  <button role="tab" class="tab" id="tab-tune" data-view="tune" data-testid="tab-tune" aria-selected="false" aria-controls="view-tune">System tune</button>
+  <button role="tab" class="tab" id="tab-tune" data-view="tune" data-testid="tab-tune" aria-selected="false" aria-controls="view-tune"><span class="tab-long">System tune</span><span class="tab-short">Tune</span></button>
+  <button role="tab" class="tab" id="tab-align" data-view="align" data-testid="tab-align" aria-selected="false" aria-controls="view-align">Align</button>
   <button role="tab" class="tab" id="tab-channels" data-view="channels" data-testid="tab-channels" aria-selected="false" aria-controls="view-channels">Channels<span class="tab-count" id="tab-ch-count" hidden></span></button>
   <button role="tab" class="tab" id="tab-setup" data-view="setup" data-testid="tab-setup" aria-selected="false" aria-controls="view-setup">Setup</button>
 </nav>
@@ -139,6 +140,7 @@
           <div class="readout"><span class="num big" id="delay-ms" data-testid="delay-ms">0.00</span><span class="unit">ms</span></div>
         </div>
         <p class="step-note" id="delay-note"></p>
+        <label class="chk" title="Re-checks the delay every few seconds and follows it when the mic is moved"><input type="checkbox" id="delay-track" data-testid="delay-track">Keep tracking when the mic moves</label>
       </div>
 
       <div class="panel step">
@@ -193,6 +195,70 @@
           <button class="btn ghost" id="btn-eq-clear" hidden>Clear</button>
         </div>
         <div id="eq-result" data-testid="eq-result"></div>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- =============================== ALIGN =============================== -->
+<section class="view" id="view-align" role="tabpanel" aria-labelledby="tab-align" hidden>
+  <div class="split">
+    <div class="panel plot-panel">
+      <div class="panel-head">
+        <h1 class="panel-title">Align two systems <span class="sub" id="al-src"></span></h1>
+        <div class="controls">
+          <label class="field inline" id="demo-system-wrap" hidden><span>Demo PA playing</span>
+            <select id="demo-system" data-testid="demo-system"></select>
+          </label>
+        </div>
+      </div>
+      <div class="legend" id="al-legend"></div>
+      <div class="plot-wrap mag"><canvas id="plot-al-mag" data-testid="plot-al-mag" aria-label="Magnitude of each system alone, their sum now, and their predicted sum once aligned"></canvas>
+        <div class="empty" id="al-empty"></div>
+      </div>
+      <div class="plot-label">Phase</div>
+      <div class="plot-wrap phase tall-phase"><canvas id="plot-al-phase" aria-label="Phase of each system; the dashed line is the second system after the correction"></canvas></div>
+      <p class="hint">Two systems add fully only where their phase traces lie on top of each other. The dashed phase line is the second system after the correction: it should run along the first one between the two dotted markers, where the systems overlap.</p>
+    </div>
+
+    <aside class="side steps">
+      <div class="panel step">
+        <h2 class="step-title"><span class="step-n">1</span>Name the two systems</h2>
+        <p class="step-text">For example mains and subs, or mains and front fills. Pick the console output that feeds each one if you want to send the result from here.</p>
+        <div class="al-sys">
+          <label class="field"><span>First system</span><input type="text" id="al-a-name" maxlength="24" data-testid="al-a-name"></label>
+          <label class="field"><span>Console output</span><select id="al-a-type"></select></label>
+          <label class="field"><span>No.</span><input type="number" id="al-a-n" min="1" max="128"></label>
+        </div>
+        <div class="al-sys">
+          <label class="field"><span>Second system</span><input type="text" id="al-b-name" maxlength="24" data-testid="al-b-name"></label>
+          <label class="field"><span>Console output</span><select id="al-b-type"></select></label>
+          <label class="field"><span>No.</span><input type="number" id="al-b-n" min="1" max="128"></label>
+        </div>
+      </div>
+
+      <div class="panel step">
+        <h2 class="step-title"><span class="step-n">2</span>Measure each one alone</h2>
+        <p class="step-text" id="al-how">Mute everything except the system you are measuring, play pink noise, and leave the mic where it is for both.</p>
+        <div class="al-slot">
+          <button class="btn" id="btn-al-a" data-testid="btn-al-a">Measure</button>
+          <span class="step-note" id="al-a-state"></span>
+        </div>
+        <div class="al-slot">
+          <button class="btn" id="btn-al-b" data-testid="btn-al-b">Measure</button>
+          <span class="step-note" id="al-b-state"></span>
+        </div>
+        <div class="al-job" id="al-job" hidden>
+          <div class="quality-bar"><i id="al-job-bar" class="good"></i></div>
+          <span id="al-job-text"></span>
+          <button class="btn small ghost" id="btn-al-cancel">Cancel</button>
+        </div>
+        <p class="step-note bad" id="al-error" hidden></p>
+      </div>
+
+      <div class="panel step">
+        <h2 class="step-title"><span class="step-n">3</span>Correction</h2>
+        <div id="al-result" data-testid="al-result"></div>
       </div>
     </aside>
   </div>
@@ -293,6 +359,44 @@
       </div>
     </div>
 
+    <div class="panel" id="setup-osc">
+      <h2 class="panel-title">Console remote</h2>
+      <p class="hint" style="margin:0 0 var(--space-3)">Lets Mixx Trace write the system EQ and the alignment delay to a DiGiCo console over the network. It reads the console first, shows you every value it would change, and sends nothing until you press Send.</p>
+      <div id="osc-forced" class="callout" hidden>Hosted preview: sends go to a simulated console, and the demo PA follows it so you can see and measure the result.</div>
+      <label class="field"><span>Connection</span>
+        <select id="osc-mode" data-testid="osc-mode">
+          <option value="off">Off</option>
+          <option value="sim">Simulated console (practice)</option>
+          <option value="udp">DiGiCo console on the network</option>
+        </select>
+      </label>
+      <div id="osc-net">
+        <label class="field"><span>Console IP address</span>
+          <input type="text" id="osc-host" data-testid="osc-host" inputmode="decimal" placeholder="192.168.1.10" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="grid-2">
+          <label class="field"><span>Console receive port</span><input type="number" id="osc-send-port" min="1024" max="65535"></label>
+          <label class="field"><span>Console send port</span><input type="number" id="osc-listen-port" min="1024" max="65535"></label>
+        </div>
+      </div>
+      <div class="grid-2">
+        <label class="field"><span>System EQ goes to</span><select id="osc-out-type" data-testid="osc-out-type"></select></label>
+        <label class="field"><span>Output number</span><input type="number" id="osc-out-n" min="1" max="128" data-testid="osc-out-n"></label>
+      </div>
+      <div class="row">
+        <button class="btn" id="btn-osc-test" data-testid="btn-osc-test">Test connection</button>
+        <span class="step-note" id="osc-info" style="margin:0"></span>
+      </div>
+      <h3 class="group-title">On the console</h3>
+      <ol class="guide-list">
+        <li>Put the computer and the console on the same network, then open External Control on the console and enable it.</li>
+        <li>Add a device of type <b>DiGiCo Pad</b> (not "Other OSC") and give it this computer's IP address. The console's receive and send ports must match the two fields above (7001 and 7000 unless you changed them).</li>
+        <li>Load the Quantum command file (<b>ipad_q3</b>) under Commands Allowed. Set Bundles off and Suppress OSC Retransmit on.</li>
+        <li>Close any other iPad or remote app first: the console talks to one Pad device at a time.</li>
+      </ol>
+      <p class="hint">The console takes remote EQ and delay on Group, Aux and Matrix outputs. Feed the PA from one of those to use this. Try it on a spare or muted output before you rely on it at a show.</p>
+    </div>
+
     <div class="panel guide">
       <h2 class="panel-title">Hooking up a DiGiCo Quantum 326</h2>
       <ol class="guide-list">
@@ -300,7 +404,7 @@
         <li><b>Reference.</b> Route a copy of what feeds the PA (the master or matrix output you are tuning) to a UB MADI output socket. Select that channel as Reference.</li>
         <li><b>Measurement mic.</b> Plug the measurement mic into a console preamp and route that input, pre-processing, to another UB MADI output socket. Keep it out of the mix. Select it as Measurement mic.</li>
         <li><b>Channels to scan.</b> Send the inputs you want advice on to the remaining UB MADI sockets (record sends work well). Name them on the Channels tab.</li>
-        <li><b>Apply.</b> System EQ goes on the output or matrix EQ (8 bands). Channel fixes go on the input strip: HPF, four EQ bands that can each run dynamic, and the dynamics section.</li>
+        <li><b>Apply.</b> System EQ goes on the output or matrix EQ (8 bands), typed in by hand or sent with Console remote. Channel fixes go on the input strip: HPF, four EQ bands that can each run dynamic, and the dynamics section.</li>
       </ol>
       <p class="hint">Any other interface works the same way: it only needs one input for the mic and one for the reference.</p>
     </div>
@@ -310,7 +414,7 @@
 </main>
 
 <footer class="foot">
-  <span id="foot-ver">TuneTrace</span>
+  <span id="foot-ver">Mixx Trace</span>
   <span>Levels are dBFS at the interface, not SPL.</span>
 </footer>
 
@@ -323,6 +427,26 @@
   <div class="row end">
     <button class="btn" id="dlg-copy">Copy</button>
     <button class="btn primary" id="dlg-download">Download</button>
+  </div>
+</dialog>
+
+<dialog id="osc-dlg" class="dlg osc-dlg" aria-labelledby="osc-title" data-testid="osc-dlg">
+  <div class="dlg-head">
+    <h2 id="osc-title" class="panel-title">Send to console</h2>
+    <span class="badge info" id="osc-sim" hidden><b>Simulated</b></span>
+  </div>
+  <p class="osc-meta" id="osc-meta"></p>
+  <div id="osc-warn"></div>
+  <div class="osc-rows" tabindex="0">
+    <table class="eq-table osc-table">
+      <thead><tr><th>Setting</th><th>Now</th><th>New</th></tr></thead>
+      <tbody id="osc-rows"></tbody>
+    </table>
+  </div>
+  <p class="hint" id="osc-foot"></p>
+  <div class="row end">
+    <button class="btn" id="osc-cancel" data-testid="osc-cancel">Cancel</button>
+    <button class="btn primary" id="osc-send" data-testid="osc-send">Send</button>
   </div>
 </dialog>
 

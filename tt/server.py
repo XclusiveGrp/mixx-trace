@@ -15,7 +15,7 @@ mimetypes.add_type("image/svg+xml", ".svg")
 def make_handler(app):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
-        server_version = "TuneTrace"
+        server_version = "MixxTrace"
 
         def log_message(self, fmt, *args):
             pass
@@ -63,10 +63,10 @@ def make_handler(app):
                         return self._send(200, app.devices(refresh=q.get("refresh", ["0"])[0] == "1"))
                     if p == "/api/report.txt":
                         return self._send(200, app.report(), "text/plain",
-                                          {"Content-Disposition": 'attachment; filename="tunetrace-report-%s.txt"' % time.strftime("%Y%m%d-%H%M")})
+                                          {"Content-Disposition": 'attachment; filename="mixxtrace-report-%s.txt"' % time.strftime("%Y%m%d-%H%M")})
                     if p == "/api/session.json":
                         return self._send(200, json.dumps(app._session(), allow_nan=False), "application/json",
-                                          {"Content-Disposition": 'attachment; filename="tunetrace-session-%s.json"' % time.strftime("%Y%m%d-%H%M")})
+                                          {"Content-Disposition": 'attachment; filename="mixxtrace-session-%s.json"' % time.strftime("%Y%m%d-%H%M")})
                     return self._send(404, {"ok": False, "msg": "Not found"})
                 rel = "index.html" if p in ("", "/") else p.lstrip("/")
                 full = os.path.normpath(os.path.join(WEB, rel))

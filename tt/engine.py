@@ -35,6 +35,13 @@ class DemoSource:
                   ("peak", 2500, 4.0, 5.0), ("hs", 9000, 0.707, -5.0), ("lp", 17000, 0.707, 0)]
     # mic positions: (delay samples, reflection delay, reflection gain, HF shelf dB, level)
     POSITIONS = [(1234, 149, 0.22, 0.0, 0.70), (1310, 211, 0.25, -1.5, 0.62), (1175, 97, 0.20, 1.0, 0.75)]
+    # two-way version of the same PA for the alignment tool: mains above a 100 Hz crossover, subs below it.
+    # The subs sit closer to the mic, so they arrive early until someone delays them.
+    MAIN_X = [("hp", 100, 0.707, 0), ("hp", 100, 0.707, 0)]
+    SUB_FILTERS = [("hp", 32, 0.707, 0), ("lp", 100, 0.707, 0), ("lp", 100, 0.707, 0)]
+    SUB_EARLY = 288             # samples: the subs sit about 2 m closer to the mic than the mains
+    SUB_INV = False
+    SYSTEMS = {"full": "Full system", "a": "Mains only", "b": "Subs only", "ab": "Mains + subs"}
 
     def __init__(self, seed=7):
         sr, n = self.SR, self.SR * 8
@@ -68,13 +75,15 @@ class DemoSource:
         ch = np.zeros((n, len(self.CHANNELS)))
         ref = pink(0.1)
         ch[:, 0] = ref
-        w = 2 * np.pi * f / sr
         h_sys = dsp.chain_response(self.PA_FILTERS, f, sr)
-        self.meas = []
-        for delay, r_delay, r_gain, hf_db, level in self.POSITIONS:
-            h = level * h_sys * dsp.chain_response([("hs", 6000, 0.707, hf_db)], f, sr)
-            h = h * (1.0 + r_gain * np.exp(-1j * w * r_delay)) * np.exp(-1j * w * delay)
-            self.meas.append((shape(ref, h) + pink(0.0025)).astype(np.float32))
+        self._f, self._w, self._n = f, 2 * np.pi * f / sr, n
+        self._ref_spec = np.fft.rfft(ref)
+        self._h = {"full": h_sys, "a": h_sys * dsp.chain_response(self.MAIN_X, f, sr),
+                   "b": dsp.chain_response(self.SUB_FILTERS, f, sr) * (-1.0 if self.SUB_INV else 1.0)}
+        self._noise = [pink(0.0025) for _ in self.POSITIONS]
+        self.system = "full"
+        self.proc = {}              # console processing per path: {"full"|"a"|"b": {"eq", "delay", "inv"}}
+        self.meas = self._render_all()
         ch[:, 1] = self.meas[0]
 
         tau = t % 0.5
@@ -135,6 +144,42 @@ class DemoSource:
         self.total = 0
         self.phase = [0.0, 0.0]
 
+    # -- the measurement mic signal, re-rendered whenever the PA or the console state changes
+    def _path(self, key, pos, early=0):
+        delay, r_delay, r_gain, hf_db, level = self.POSITIONS[pos]
+        f, w, sr = self._f, self._w, self.SR
+        p = self.proc.get(key) or {}
+        h = level * self._h[key] * dsp.chain_response([("hs", 6000, 0.707, hf_db)], f, sr)
+        for f0, g, q, curve in p.get("eq", ()):
+            kind = {3: "ls", 4: "hs"}.get(curve, "peak")
+            h = h * dsp.chain_response([(kind, min(max(f0, 20.0), 20000.0), max(q, 0.1), g)], f, sr)
+        if p.get("inv"):
+            h = -h
+        total = delay - early + float(p.get("delay", 0.0)) * sr
+        return h * (1.0 + r_gain * np.exp(-1j * w * r_delay)) * np.exp(-1j * w * total)
+
+    def _render_all(self):
+        out = []
+        for pos in range(len(self.POSITIONS)):
+            if self.system == "full":
+                h = self._path("full", pos)
+            else:
+                h = 0.0
+                if self.system in ("a", "ab"):
+                    h = h + self._path("a", pos)
+                if self.system in ("b", "ab"):
+                    h = h + self._path("b", pos, self.SUB_EARLY)
+            out.append((np.fft.irfft(self._ref_spec * h, self._n) + self._noise[pos]).astype(np.float32))
+        return out
+
+    def configure(self, system=None, proc=None):
+        """Switch which part of the PA is on, and/or what the console is doing to it."""
+        if system in self.SYSTEMS:
+            self.system = system
+        if proc is not None:
+            self.proc = proc
+        self.meas = self._render_all()
+
     @staticmethod
     def _fb_db(t, start, peak_db):
         """Level of a feedback tone that builds, holds, then gets pulled."""
@@ -151,8 +196,7 @@ class DemoSource:
         n = self.BLOCK
         idx = (self.pos + np.arange(n)) % len(self.loop)
         out = self.loop[idx].copy()
-        if self.position:
-            out[:, 1] = self.meas[self.position][idx]
+        out[:, 1] = self.meas[self.position][idx]
         t = (self.total / self.SR) % 24.0
         for j, (start, freq, peak_db, src) in enumerate(((3.0, 2480.0, -16.0, 7), (14.0, 196.0, -18.0, 6))):
             db = self._fb_db(t, start, peak_db)

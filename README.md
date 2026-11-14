@@ -1,45 +1,58 @@
-# TuneTrace
+# Mixx Trace
 
-Feedback finder, system-tuning trace and channel advice for live sound. It runs on your own
-computer, listens through any audio interface, and shows its interface in your web browser.
+Feedback finder, system-tuning trace, system alignment and channel advice for live sound. It runs
+on your own computer (macOS or Windows), listens through any audio interface, shows its interface
+in your web browser, and can send the system EQ and alignment delay to a DiGiCo console.
 
 | Tab | What it does |
 | --- | --- |
 | Feedback | Live spectrum of the measurement mic. A sustained, narrow, steady tone is flagged as **ringing** (watch it) or **feedback** (act now), with its frequency, note, the cut to make, and the input channel it was found on. |
 | System tune | Dual-channel transfer function (magnitude, phase, coherence) of mic vs console output. Finds the delay, captures mic positions, builds the **best trace** from them, and fits a parametric EQ to your target curve. |
+| Align | Measures two systems one at a time (mains and subs, mains and fills) and works out the delay and polarity that make them add best where they overlap. Shows the sum now and the sum once aligned. |
 | Channels | Scans every input the interface delivers and lists what needs attention on each one (clipping, level, rumble, hum, build-ups, sibilance, feedback suspects), laid out for the console's input strip. |
-| Setup | Interface, sample rate, which channels are the mic and the reference, console profile, mic calibration file, signal generator, session export. |
+| Setup | Interface, sample rate, which channels are the mic and the reference, console profile, mic calibration file, signal generator, session export, console remote. |
 
 ## Install and start
 
-You need Python 3.9 or newer ([python.org/downloads](https://www.python.org/downloads/)). The first
-start downloads two packages (numpy and sounddevice), so it needs internet once. After that
-TuneTrace works offline.
+Mixx Trace runs on macOS and Windows from the same folder. You need Python 3.9 or newer
+([python.org/downloads](https://www.python.org/downloads/)). The first start downloads two
+packages (numpy and sounddevice), so it needs internet once. After that it works offline.
 
 **Mac**
 
 1. Unzip the folder somewhere permanent (for example Documents).
-2. Open Terminal, type `cd ` (with a space), drag the TuneTrace folder onto the window, press Return.
-3. Run `bash start-mac.command`
+2. Double-click `start-mac.command`. The first time, macOS may refuse because the file came from
+   the internet: right-click it and choose Open, or go to System Settings, Privacy & Security and
+   press Open Anyway.
+3. If you prefer Terminal: type `cd ` (with a space), drag the Mixx Trace folder onto the window,
+   press Return, then run `bash start-mac.command`.
 4. The interface opens at http://127.0.0.1:8765/. The first time you start an input, macOS asks
    whether Terminal may use the microphone: allow it.
 
-Double-clicking `start-mac.command` also works once macOS trusts it (right-click, Open, Open).
+**Windows 10 or 11**
 
-**Windows**
-
-Double-click `start-windows.bat`. It turns on ASIO support, so ASIO drivers show up in the
-interface list.
+1. Install Python from python.org and tick "Add python.exe to PATH" in the installer.
+2. Unzip the folder somewhere permanent, then double-click `start-windows.bat`. If SmartScreen
+   shows "Windows protected your PC", choose More info, Run anyway.
+3. The interface opens at http://127.0.0.1:8765/. ASIO support is switched on, so ASIO drivers
+   appear in the interface list next to the WASAPI ones. If Windows blocks the microphone, turn on
+   Settings, Privacy & security, Microphone, "Let desktop apps access your microphone".
+4. The first time you use Console remote, Windows Firewall asks whether Python may receive on the
+   network: allow it on Private networks, or the console's answers never arrive.
 
 **By hand (any system)**
 
 ```
-python3 -m pip install -r requirements.txt
-python3 tunetrace.py            # add --demo to start on the built-in simulated show
-python3 tunetrace.py --list-devices
+python3 -m pip install -r requirements.txt      (Windows: py -m pip install -r requirements.txt)
+python3 mixxtrace.py                            (Windows: py mixxtrace.py)
+python3 mixxtrace.py --demo                     start on the built-in simulated show
+python3 mixxtrace.py --list-devices
 ```
 
-Leave the Terminal window open while you work. Close it, or press Ctrl+C, to quit.
+Leave the Terminal or Command Prompt window open while you work. Close it, or press Ctrl+C, to quit.
+
+Your session is saved in a `.mixxtrace` folder in your home folder on both systems, and an
+exported session file opens on either one.
 
 ## Hooking up a DiGiCo Quantum 326
 
@@ -56,11 +69,12 @@ UB MADI driver and pick its ASIO entry.
 4. **Channels to scan.** Send the inputs you want advice on to the remaining sockets (the same
    patch you would use for a multitrack recording). Name them on the Channels tab and pick each
    source type, so the advice fits the instrument.
-5. **Apply.** System EQ goes on the output or matrix EQ (8 bands). Channel suggestions are written
-   for the input strip: gain trim, HPF, the four EQ bands (any of which can run dynamic), and the
-   dynamics section.
+5. **Apply.** System EQ goes on the output or matrix EQ (8 bands), typed in by hand or sent with
+   Console remote (below). Channel suggestions are written for the input strip: gain trim, HPF,
+   the four EQ bands (any of which can run dynamic), and the dynamics section.
 
-TuneTrace does not change anything on the console. You enter the values, listen, and decide.
+Unless you turn on Console remote and press Send, Mixx Trace changes nothing on the console.
+Channel suggestions are never sent: you enter those, listen, and decide.
 
 Any other interface works the same way. The minimum is two inputs: one for the mic, one for a
 copy of the signal going to the PA. With one input you still get the Feedback tab.
@@ -81,6 +95,76 @@ copy of the signal going to the PA. With one input you still get the Feedback ta
    broad, and no filter is placed where coherence is poor. The green trace is the predicted result.
 7. Enter the bands on the console, restart the average and measure again.
 
+## Aligning two systems
+
+Use the Align tab for mains and subs, mains and front fills, or any two systems that overlap.
+
+1. Name the two systems and, if you want to send the result, pick the console output feeding each.
+2. Mute everything except the first system, play pink noise, press **Measure**. Then the same for
+   the second. The mic must stay in one place for both, and the reference must not change.
+3. Mixx Trace shows which system to delay and by how much (ms, metres, feet, samples), whether to
+   flip the polarity of the second system, the frequency range where the two overlap, and how many
+   dB the sum gains there. The plot shows each system, the sum as it is now (dashed) and the sum
+   once aligned (green). In the phase plot, the dashed line is the second system after the
+   correction; it should lie on the first one between the two markers.
+4. Set the delay and polarity on the console, or press **Send to console**.
+5. Unmute both and press **Check live**. The live trace should follow the green line.
+
+How it decides: over the range where both systems are within 12 dB of each other, it tries every
+delay with and without a polarity flip and keeps the one with the highest summed level. Across a
+narrow crossover, "flip and delay a little more" and "no flip and delay a little less" can add up
+almost the same. When they are within 0.5 dB, it picks the one whose phase traces stay together
+over the wider range, and shows the other as a **close call** so you can listen to both.
+
+On System tune, **Keep tracking when the mic moves** re-checks the reference delay every few
+seconds and follows it when the mic is carried to a new position. It only moves on a confident
+change, so the trace does not jump while you are measuring.
+
+## Console remote (DiGiCo)
+
+Mixx Trace can write the fitted system EQ to one console output, and the alignment delay and
+polarity to the outputs you picked on the Align tab. It is off until you turn it on in Setup.
+
+On the console:
+
+1. Put the computer and the console on the same network. Open External Control and enable it.
+2. Add a device of type **DiGiCo Pad** (not "Other OSC") with this computer's IP address. The
+   console's receive port and send port must match the two port fields in Setup (7001 and 7000
+   unless you changed them).
+3. Load the Quantum command file (`ipad_q3`) under Commands Allowed. Set Bundles off and Suppress
+   OSC Retransmit on.
+4. Close any other iPad or remote app. The console talks to one Pad device at a time.
+
+In Mixx Trace: Setup, Console remote, choose "DiGiCo console on the network", enter the console's
+IP address, pick the output the system EQ goes to, and press **Test connection**. "Simulated
+console (practice)" behaves the same way without a console; with the demo signal, the simulated
+PA follows what you send, so you can see the result.
+
+What happens when you press **Send to console**:
+
+- The console is read first. A table shows every setting as it is now and what it would become.
+  Nothing has been written at this point.
+- Only after you press Send are the values written, one at a time, 100 ms apart. Settings that
+  already hold the right value are skipped. Each band's gain is flattened before its frequency
+  and Q move, so the output never passes through a loud in-between state.
+- Every value is read back. If the console holds something different, you are told which one.
+- The values from before the send are kept. **Undo** puts them back, and **EQ in / EQ out**
+  switches the sent EQ out and in for an A/B comparison.
+- A preview is valid for two minutes and for one send. If the target output changes in between,
+  it is refused and you preview again.
+
+Limits you should know:
+
+- Remote EQ and delay work on **Group, Aux and Matrix** outputs. Feed the PA from one of those.
+- Gain is kept within ±18 dB, Q within 0.1 to 20, delay within 0 to 1300 ms.
+- Bands 1 to 4 are used on every output. Bands 5 to 8 are only used when the console answers for
+  them; if it does not, Mixx Trace offers to fit the EQ again with four bands.
+- DiGiCo does not publish this message list. The addresses come from two independent open-source
+  controllers for these consoles, [Bitfocus Companion's DiGiCo module](https://github.com/bitfocus/companion-module-digico-osc)
+  and [JPMixer](https://github.com/JPMixing-inc/jpmixer). They have not been tried on a Quantum 326
+  from this program. **Try it on a spare or muted output first**, and check the result on the
+  console screen, before you use it on a live PA.
+
 ## Feedback detection
 
 A tone is scored on how far it stands above the spectrum on both sides, how long it has lasted,
@@ -100,28 +184,39 @@ whether it is growing. Sensitivity (Low / Normal / High) sets how far a tone mus
 - Channel advice is rule-based and conservative. It reads level, spectrum balance and steady
   tones; it does not hear the song. Treat every suggestion as a starting point and confirm by ear.
 - An EQ fitted to a single mic position chases that seat's reflections. Use several positions.
-- Automatic EQ fixes tonal balance. It does not fix time alignment, coverage or room decay.
+- Automatic EQ fixes tonal balance. It does not fix coverage or room decay.
+- Alignment is right for the mic position you measured at. Away from it the path lengths change,
+  so pick the position that matters most (usually mix position or the centre of the audience).
 - Without a mic calibration file, the mic's own response is part of the trace.
 
 ## How it was checked
 
-`python3 -m unittest` runs 19 checks against simulated signals with a known answer: no alarms on
-60 s of noise at every sensitivity; growing tones at 125 Hz to 8 kHz flagged at the right
-frequency; held musical notes never called feedback; the transfer function, delay and polarity
-matched against a simulated PA; 96 kHz input; EQ limits; channel advice on a simulated 12-channel
-show; and the multichannel input path through a stand-in audio driver.
+`python3 -m unittest` (Windows: `py -m unittest`) runs 48 checks against simulated signals with a
+known answer: no alarms on 60 s of noise at every sensitivity; growing tones at 125 Hz to 8 kHz
+flagged at the right frequency; held musical notes never called feedback; the transfer function,
+delay and polarity matched against a simulated PA; 96 kHz input; EQ limits; channel advice on a
+simulated 12-channel show; the multichannel input path through a stand-in audio driver; alignment
+of ideal crossovers with a known answer; and the console remote against a stand-in console over
+real network messages (exact messages and order, limits, preview writes nothing, refusal without
+confirmation, read-back, undo, a console that does not answer).
 
-It has **not** yet been run against real audio hardware, a real console or a real room. Do a
-soundcheck with it before relying on it at a show.
+It has **not** yet been run against real audio hardware, a real console, a real room, or on a
+Windows or Mac machine: it was developed and checked on Linux, with care taken over the parts
+that differ between systems. Do a soundcheck with it before relying on it at a show.
 
 ## Files
 
 ```
-tunetrace.py        start here
-tt/                 analysis (analyzer, eq, advisor), audio I/O (engine), app state, web server
+mixxtrace.py        start here
+tt/                 analysis (analyzer, eq, align, advisor), audio I/O (engine), console remote (osc),
+                    app state, web server
+start-mac.command   double-click launcher for macOS
+start-windows.bat   double-click launcher for Windows
 web/                the interface
 tests/              the checks described above
-~/.tunetrace/       your saved session (traces, EQ, channel names, settings)
+~/.mixxtrace/       your saved session (traces, EQ, channel names, settings)
 ```
 
-The server only listens on this computer (127.0.0.1). Nothing is sent anywhere.
+The interface is only reachable from this computer (127.0.0.1). The only thing Mixx Trace sends
+over the network is console remote messages, to the console address you entered, when you press
+Send or Test connection.

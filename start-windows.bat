@@ -1,5 +1,5 @@
 @echo off
-rem TuneTrace launcher for Windows. Double-click it.
+rem Mixx Trace launcher for Windows. Double-click it.
 cd /d "%~dp0"
 set SD_ENABLE_ASIO=1
 
@@ -15,7 +15,7 @@ if errorlevel 1 (
 )
 
 if not exist .venv\Scripts\python.exe (
-  echo First run: setting up TuneTrace, about a minute, needs internet once...
+  echo First run: setting up Mixx Trace, about a minute, needs internet once...
   %PY% -m venv .venv
   if errorlevel 1 (
     echo Could not create the Python environment.
@@ -32,6 +32,6 @@ if not exist .venv\Scripts\python.exe (
   )
 )
 
-echo Starting TuneTrace. Leave this window open while you work; close it to quit.
-.venv\Scripts\python.exe tunetrace.py %*
+echo Starting Mixx Trace. Leave this window open while you work; close it to quit.
+.venv\Scripts\python.exe mixxtrace.py %*
 if errorlevel 1 pause

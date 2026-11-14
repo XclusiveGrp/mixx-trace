@@ -7,15 +7,20 @@ import time
 
 import numpy as np
 
-from . import __version__, advisor, dsp, eq
+from . import __version__, advisor, align, dsp, eq, osc
 from .analyzer import Analyzer
 from .engine import DemoSource, Engine, Generator
 
 AVG = {"fast": 1.0, "med": 4.0, "slow": 10.0, "inf": None}
 SMOOTH = (3, 6, 12, 24, 48)
 HOLD_S = 8.0                     # seconds a channel finding stays listed after it was last seen
-SESSION_DIR = os.path.join(os.path.expanduser("~"), ".tunetrace")
+APP_NAME = "Mixx Trace"
+SESSION_DIR = os.path.join(os.path.expanduser("~"), ".mixxtrace")
 SESSION_FILE = os.path.join(SESSION_DIR, "session.json")
+OLD_SESSION_FILE = os.path.join(os.path.expanduser("~"), ".tunetrace", "session.json")   # name before 0.2
+PLAN_TTL = 120.0                 # seconds a previewed console push stays valid
+ALIGN_SETTLE = 3.0               # seconds of fresh audio before an alignment capture starts
+ALIGN_FRAMES = 10
 
 
 def arr(x, nd=1):
@@ -69,7 +74,18 @@ class App:
             "target": {"preset": "flat", "low": 0.0, "tilt": 0.0},
             "eq": {"bands": 8, "boost": 3.0, "cut": 12.0, "auto_range": True, "f_lo": 40.0, "f_hi": 16000.0,
                    "source": "auto"},
+            "track": False,
+            "osc": {"mode": "off", "host": "", "send_port": 7001, "listen_port": 7000,
+                    "out_type": "Matrix", "out_n": 1},
+            "align": {"a_name": "Mains", "a_type": "Matrix", "a_n": 1, "b_name": "Subs", "b_type": "Matrix", "b_n": 2},
         }
+        self.sim = osc.SimConsole()
+        self.osc_lock = threading.Lock()
+        self.osc_plan = None
+        self.osc_undo = None
+        self.osc_info = None
+        self.osc_progress = None
+        self.al = {"a": None, "b": None, "result": None, "job": None, "error": None}
         self.demo_roles = {"meas": 1, "ref": 0}
         self.traces = []
         self.trace_seq = 0
@@ -91,13 +107,15 @@ class App:
         with self.lock:
             if self.an is not None:
                 self.an.ingest(block)
+                if self.al["job"]:
+                    self._align_step()
 
     def bump(self):
         self.ver += 1
         self._save()
 
     def _session(self):
-        return {"app": "TuneTrace", "version": __version__, "settings": self.s, "traces": self.traces,
+        return {"app": APP_NAME, "version": __version__, "settings": self.s, "traces": self.traces,
                 "trace_seq": self.trace_seq, "eq": self._eq_light(), "cal": self.cal,
                 "channels": self.ch_meta["live"]}
 
@@ -112,29 +130,45 @@ class App:
         try:
             os.makedirs(SESSION_DIR, exist_ok=True)
             tmp = SESSION_FILE + ".tmp"
-            with open(tmp, "w") as fh:
+            with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(self._session(), fh)
             os.replace(tmp, SESSION_FILE)
         except OSError:
             pass
 
     def _load(self):
-        try:
-            with open(SESSION_FILE) as fh:
-                self._apply_session(json.load(fh))
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
+        for path in (SESSION_FILE, OLD_SESSION_FILE):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    self._apply_session(json.load(fh), own=True)
+                return
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
 
-    def _apply_session(self, data):
-        if not isinstance(data, dict) or data.get("app") != "TuneTrace":
-            raise ValueError("This is not a TuneTrace session file.")
+    def _apply_session(self, data, own=False):
+        """own: this computer's own saved session. A file brought in from elsewhere never arms the console remote."""
+        if not isinstance(data, dict) or data.get("app") not in (APP_NAME, "TuneTrace"):
+            raise ValueError("This is not a Mixx Trace session file.")
+        if not own:
+            keep = dict(self.s["osc"])
         n = len(dsp.GRID)
         st = data.get("settings") or {}
         for k, v in st.items():
-            if k in ("target", "eq") and isinstance(v, dict):
-                self.s[k].update({kk: vv for kk, vv in v.items() if kk in self.s[k]})
+            if k in ("target", "eq", "osc", "align") and isinstance(v, dict):
+                self.s[k].update({kk: vv for kk, vv in v.items()
+                                  if kk in self.s[k] and type(vv) is type(self.s[k][kk])})
             elif k in self.s and not isinstance(self.s[k], dict):
                 self.s[k] = v
+        o = self.s["osc"]
+        if not own:
+            o.update(mode=keep["mode"], host=keep["host"], send_port=keep["send_port"], listen_port=keep["listen_port"])
+        try:
+            o["host"] = osc.check_host(o["host"]) if o["host"] else ""
+            o["send_port"], o["listen_port"] = osc.check_port(o["send_port"]), osc.check_port(o["listen_port"])
+            if o["mode"] not in ("off", "sim", "udp") or o["out_type"] not in osc.OUT_TYPES:
+                raise osc.OscError("bad")
+        except (osc.OscError, ValueError, TypeError):
+            o.update(mode="off", host="", send_port=7001, listen_port=7000, out_type="Matrix")
         self.traces = [t for t in data.get("traces") or []
                        if isinstance(t, dict) and len(t.get("mag", [])) == n and len(t.get("coh", [])) == n]
         self.trace_seq = max([int(data.get("trace_seq") or 0)] + [int(t.get("id", 0)) for t in self.traces])
@@ -175,6 +209,7 @@ class App:
         an.avg_tau = AVG.get(self.s["avg"], 4.0)
         an.sens = self.s["sens"]
         an.cal = from_list(self.cal["db"]) if self.cal else None
+        an.track = bool(self.s["track"])
 
     def _new_analyzer(self):
         self.an = Analyzer(self.engine.sr, self.engine.nch)
@@ -197,13 +232,15 @@ class App:
         self.engine.start_demo()
         if self.engine.demo is not None:
             self.engine.demo.position = 0
+            self.engine.demo.system = "full"
+            self._sync_demo()
         self.idle_stopped = False
         self.ver += 1
         return {"ok": True}
 
     def start_live(self, device=None, sr=None, channels=None):
         if self.demo_only:
-            return {"ok": False, "msg": "Live input is only available when TuneTrace runs on your own computer."}
+            return {"ok": False, "msg": "Live input is only available when Mixx Trace runs on your own computer."}
         with self.lock:
             self.an = None
         ok = self.engine.start_live(device, sr or None, channels or None)
@@ -235,7 +272,8 @@ class App:
                 "dropped": e.dropped, "live": Engine.live_available() and not self.demo_only,
                 "demo_only": self.demo_only, "uptime": round(time.time() - self.started, 1) if self.an else 0,
                 "gen": {"on": self.gen.cfg["on"], "error": self.gen.error},
-                "demo_pos": (e.demo.position + 1) if (e.mode == "demo" and e.demo) else None}
+                "demo_pos": (e.demo.position + 1) if (e.mode == "demo" and e.demo) else None,
+                "demo_system": e.demo.system if (e.mode == "demo" and e.demo) else None}
 
     def _events(self, an):
         con = self.console()
@@ -360,13 +398,15 @@ class App:
                              "crit": sum(1 for r in rows if r["worst"] == 0 and r["active"]),
                              "warn": sum(1 for r in rows if r["worst"] == 1 and r["active"])}
             out["tf_ok"] = an.meas != an.ref
+            if self.osc_progress:
+                out["osc_busy"] = self.osc_progress
             if view == "feedback":
                 r = an.rta_snapshot(int(self.s["rta_smooth"]))
                 out["rta"] = {"avg": arr(r["avg"]), "peak": arr(r["peak"])}
                 out["events"] = evs
                 out["buildups"] = [{"f": round(b["f"], 1), "excess": round(b["excess"], 1), "iso": dsp.iso_band(b["f"]),
                                     "cut": -min(6.0, max(2.0, round(b["excess"] * 0.6 * 2) / 2))} for b in an.buildups]
-            elif view == "tune":
+            elif view in ("tune", "align"):
                 tf = an.tf_snapshot(int(self.s["tf_smooth"]))
                 have = tf["frames"] >= 1 and out["tf_ok"]
                 out["tf"] = {"mag": arr(tf["mag"]) if have else None, "phase": arr(tf["phase"], 0) if have else None,
@@ -375,12 +415,15 @@ class App:
                 dr = an.delay_result
                 out["delay"] = {"samples": int(an.delay), "ms": round(1000.0 * an.delay / an.sr, 2),
                                 "m": round(343.0 * an.delay / an.sr, 2), "pending": bool(an.delay_pending),
+                                "track": bool(an.track), "moves": an.track_moves,
                                 "result": ({k: (round(v, 2) if isinstance(v, float) else v) for k, v in dr.items()}
                                            if dr else None)}
                 fc = self._focus(an, tf if have else None) if have or self.traces else None
                 off = self._target_offset(fc[1], fc[2]) if fc else None
                 out["target_off"] = round(off, 2) if off is not None else None
                 out["focus"] = fc[0] if fc else None
+                j = self.al["job"]
+                out["align_job"] = ({"slot": j["slot"], "stage": j["stage"], "pct": self._align_pct(an, j)} if j else None)
             elif view == "channels":
                 out["channels"] = rows
             return out
@@ -488,6 +531,8 @@ class App:
                              for k, v in advisor.CONSOLES.items()},
                 "cal": {"name": self.cal["name"]} if self.cal else None,
                 "gen": dict(self.gen.cfg), "demo_only": self.demo_only,
+                "osc": self._osc_static(), "align": self._align_static(),
+                "demo_systems": DemoSource.SYSTEMS,
             }
 
     # -------------------------------------------------------------- commands
@@ -498,6 +543,8 @@ class App:
             return {"ok": False, "msg": "Unknown command."}
         try:
             return fn(d) or {"ok": True}
+        except osc.OscError as exc:
+            return {"ok": False, "msg": str(exc)}
         except (ValueError, TypeError, KeyError) as exc:
             return {"ok": False, "msg": str(exc) or "Invalid request."}
 
@@ -524,6 +571,8 @@ class App:
             s["rta_smooth"] = int(d["rta_smooth"])
         if "console" in d and d["console"] in advisor.CONSOLES:
             s["console"] = d["console"]
+        if "track" in d:
+            s["track"] = bool(d["track"])
         if "target" in d:
             t = d["target"]
             if t.get("preset") in eq.TARGET_PRESETS:
@@ -622,6 +671,10 @@ class App:
         self.eq = None
         self.bump()
 
+    def c_eq_refit(self, d):
+        self.s["eq"]["bands"] = int(min(max(int(d.get("bands", 4)), 1), 12))
+        return self.run_eq()
+
     def c_clear_events(self, d):
         with self.lock:
             if self.an is not None:
@@ -643,7 +696,7 @@ class App:
 
     def c_gen(self, d):
         if self.demo_only:
-            return {"ok": False, "msg": "The signal generator needs TuneTrace running on your own computer."}
+            return {"ok": False, "msg": "The signal generator needs Mixx Trace running on your own computer."}
         if d.get("on"):
             cfg = {"type": "sine" if d.get("type") == "sine" else "pink",
                    "freq": min(max(float(d.get("freq", 1000)), 20.0), 20000.0),
@@ -697,10 +750,381 @@ class App:
         self.ver += 1
         return {"ok": True, "pos": e.demo.position + 1}
 
+    def c_demo_system(self, d):
+        e = self.engine
+        if self.mode != "demo" or e.demo is None:
+            return {"ok": False, "msg": "Only available with the demo signal."}
+        if d.get("system") not in DemoSource.SYSTEMS:
+            return {"ok": False, "msg": "Unknown demo system."}
+        with self.lock:
+            e.demo.configure(system=d["system"])
+            self.an.delay_result = None
+            self.an.reset_tf()
+        self.ver += 1
+        return {"ok": True}
+
+    # ------------------------------------------------------- console remote
+    def _osc_mode(self):
+        return "sim" if self.demo_only else self.s["osc"]["mode"]
+
+    def _link(self):
+        o = self.s["osc"]
+        mode = self._osc_mode()
+        if mode == "sim":
+            return osc.SimLink(self.sim)
+        if mode != "udp":
+            raise osc.OscError("Console remote is off. Turn it on in Setup first.")
+        return osc.UdpLink(osc.check_host(o["host"]), osc.check_port(o["send_port"]), osc.check_port(o["listen_port"]))
+
+    def _osc_run(self, fn):
+        """Open one paced conversation with the console and run fn(client, console_name) in it."""
+        if not self.osc_lock.acquire(blocking=False):
+            return {"ok": False, "msg": "Still talking to the console. Wait for it to finish."}
+        try:
+            self.osc_progress = {"sent": 0}
+            cli = osc.Client(self._link(), progress=lambda n: self.osc_progress.update(sent=n))
+            with cli:
+                name = osc.probe(cli)
+                self.osc_info = {"name": name, "time": time.strftime("%H:%M")}
+                return fn(cli, name)
+        except osc.OscError as exc:
+            return {"ok": False, "msg": str(exc)}
+        finally:
+            self.osc_progress = None
+            self.osc_lock.release()
+
+    def _sync_demo(self):
+        """The demo PA follows the simulated console, so a push can be heard and measured."""
+        d = self.engine.demo
+        if d is None:
+            return
+        proc = {}
+        if self._osc_mode() == "sim":
+            o, al = self.s["osc"], self.s["align"]
+            proc["full"] = self.sim.output(o["out_type"], o["out_n"])
+            for k in ("a", "b"):
+                if al[k + "_type"]:
+                    proc[k] = self.sim.output(al[k + "_type"], al[k + "_n"])
+        d.configure(proc=proc)
+
+    def _osc_static(self):
+        o = self.s["osc"]
+        u = self.osc_undo
+        return {"mode": self._osc_mode(), "forced_sim": self.demo_only, "host": o["host"], "send_port": o["send_port"],
+                "listen_port": o["listen_port"], "out_type": o["out_type"], "out_n": o["out_n"],
+                "types": list(osc.OUT_TYPES), "info": self.osc_info,
+                "undo": {"what": u["what"], "target": u["target"], "time": u["time"]} if u else None}
+
+    def c_osc_set(self, d):
+        o = self.s["osc"]
+        if "mode" in d and d["mode"] in ("off", "sim", "udp"):
+            o["mode"] = d["mode"]
+        if "host" in d:
+            host = str(d["host"]).strip()
+            o["host"] = osc.check_host(host) if host else ""
+        for k in ("send_port", "listen_port"):
+            if k in d:
+                o[k] = osc.check_port(d[k])
+        if o["send_port"] == o["listen_port"] and o["host"] in ("127.0.0.1",):
+            raise osc.OscError("The two ports must differ.")
+        if "out_type" in d and d["out_type"] in osc.OUT_TYPES:
+            o["out_type"] = d["out_type"]
+        if "out_n" in d:
+            o["out_n"] = int(min(max(int(d["out_n"]), 1), 128))
+        al = self.s["align"]
+        for k in ("a", "b"):
+            if k + "_name" in d:
+                al[k + "_name"] = str(d[k + "_name"]).strip()[:24] or ("Mains" if k == "a" else "Subs")
+            if k + "_type" in d and (d[k + "_type"] in osc.OUT_TYPES or d[k + "_type"] == ""):
+                al[k + "_type"] = d[k + "_type"]
+            if k + "_n" in d:
+                al[k + "_n"] = int(min(max(int(d[k + "_n"]), 1), 128))
+        self.osc_plan = None
+        if any(k in d for k in ("mode", "host", "send_port", "listen_port")):
+            self.osc_info = None
+        self._sync_demo()
+        self.bump()
+
+    def c_osc_test(self, d):
+        r = self._osc_run(lambda cli, name: {"ok": True, "msg": "Connected to %s." % name, "name": name})
+        self.ver += 1
+        return r
+
+    def _plan_for(self, what, cli):
+        o, al = self.s["osc"], self.s["align"]
+        if what == "eq":
+            if not self.eq or not self.eq["bands"]:
+                raise osc.OscError("There is no EQ to send yet. Press Suggest EQ first.")
+            plan = osc.plan_eq(cli, o["out_type"], o["out_n"], self.eq["bands"])
+            if plan["ok"]:
+                plan["title"] = "Send system EQ to %s" % plan["target"]
+            return plan
+        if what == "align":
+            r = self.al["result"]
+            if not r or not r.get("ok"):
+                raise osc.OscError("There is no alignment to send yet. Measure both systems first.")
+            if r.get("pushed"):
+                raise osc.OscError("This correction was already sent at %s. Sending it again would add the delay twice. "
+                                   "Measure both systems again first." % r["pushed"])
+            steps = []
+            for k in ("a", "b"):
+                add = r["ms"] / 1000.0 if (r["who"] == k and r["ms"] >= 0.01) else 0.0
+                flip = bool(k == "b" and r["invert"])
+                if not add and not flip:
+                    continue
+                if not al[k + "_type"]:
+                    raise osc.OscError("Pick the console output that feeds %s first." % al[k + "_name"])
+                steps.append({"typ": al[k + "_type"], "n": al[k + "_n"], "name": al[k + "_name"], "add_s": add, "flip": flip})
+            if not steps:
+                raise osc.OscError("The two systems are already aligned. Nothing to send.")
+            if len(steps) == 2 and (steps[0]["typ"], steps[0]["n"]) == (steps[1]["typ"], steps[1]["n"]):
+                raise osc.OscError("Both systems are set to the same console output. Give each its own output.")
+            plan = osc.plan_delay(cli, steps)
+            plan["title"] = "Send alignment to %s" % plan["target"]
+            return plan
+        if what == "undo":
+            u = self.osc_undo
+            if not u:
+                raise osc.OscError("Nothing to undo.")
+            plan = osc.plan_restore(cli, u["saved"])
+            plan["title"] = "Undo: put %s back as it was at %s" % (u["target"], u["time"])
+            return plan
+        raise osc.OscError("Unknown request.")
+
+    def c_osc_preview(self, d):
+        """Read the console and lay out exactly what would be written. Sends no changes."""
+        what = str(d.get("what"))
+        self.osc_plan = None
+
+        def run(cli, name):
+            plan = self._plan_for(what, cli)
+            if not plan["ok"]:
+                return plan
+            n = sum(1 for o in plan["ops"] if not o["skip"])
+            if n == 0:
+                return {"ok": False, "same": True, "msg": "The console already holds these values. Nothing to send."}
+            token = "%x" % int(time.time() * 1000)
+            self.osc_plan = dict(plan, what=what, token=token, made=time.time(), console=name)
+            sim = self._osc_mode() == "sim"
+            return {"ok": True, "token": token, "title": plan["title"], "console": name, "sim": sim,
+                    "warnings": plan["warnings"], "n": n,
+                    "seconds": 0 if sim else int(math.ceil(osc.count_messages(plan["ops"]) * osc.PACE)),
+                    "rows": [{"label": o["label"], "now": o["now_txt"], "new": o["new_txt"], "skip": o["skip"]}
+                             for o in plan["ops"]]}
+
+        return self._osc_run(run)
+
+    def c_osc_push(self, d):
+        plan = self.osc_plan
+        if d.get("confirm") is not True or not plan or d.get("token") != plan["token"]:
+            return {"ok": False, "msg": "Nothing was sent. Open the preview and confirm it first."}
+        if time.time() - plan["made"] > PLAN_TTL:
+            self.osc_plan = None
+            return {"ok": False, "msg": "That preview is more than two minutes old. Nothing was sent. Open it again."}
+        self.osc_plan = None
+
+        def run(cli, name):
+            n, bad = osc.execute(cli, plan["ops"])
+            stamp = time.strftime("%H:%M")
+            if plan["what"] == "undo":
+                self.osc_undo = None
+                if self.eq:
+                    self.eq.pop("pushed", None)
+                if self.al["result"]:
+                    self.al["result"].pop("pushed", None)
+            else:
+                saved, seen = [], set()
+                for o in plan["ops"]:
+                    if not o["skip"] and o["addr"] not in seen:
+                        seen.add(o["addr"])
+                        saved.append({"addr": o["addr"], "kind": o["kind"], "value": o["now"],
+                                      "label": o["label"].replace(" (flatten before moving)", "")})
+                # the flatten step recorded the real starting gain; later steps on that address did not
+                self.osc_undo = {"what": plan["what"], "target": plan["target"], "time": stamp, "saved": saved[::-1]}
+                if plan["what"] == "eq" and self.eq:
+                    self.eq["pushed"] = {"target": plan["target"], "time": stamp, "console": name}
+                if plan["what"] == "align" and self.al["result"]:
+                    self.al["result"]["pushed"] = stamp
+            self._sync_demo()
+            if bad:
+                return {"ok": True, "n": n, "mismatch": bad,
+                        "msg": "Sent, but the console reports a different value for: %s. Check the console screen."
+                               % ", ".join("%s (wanted %s, console says %s)" % (b["label"], b["want"], b["got"]) for b in bad[:4])}
+            return {"ok": True, "n": n, "mismatch": [],
+                    "msg": "%s: %d value%s written and read back from %s." % (
+                        "Restored" if plan["what"] == "undo" else "Sent", n, "" if n == 1 else "s", name)}
+
+        r = self._osc_run(run)
+        self.bump()
+        return r
+
+    def c_osc_eq_in(self, d):
+        """Switch the pushed output EQ in or out, for a quick before and after."""
+        if not self.eq or not self.eq.get("pushed"):
+            return {"ok": False, "msg": "Send the EQ to the console first."}
+        o = self.s["osc"]
+        on = 1.0 if d.get("on") else 0.0
+        addr = osc.base(o["out_type"], o["out_n"]) + "EQ/eq_in"
+
+        def run(cli, name):
+            cli.write(addr, on)
+            got = cli.query(addr)
+            self._sync_demo()
+            if got is None or (got >= 0.5) != (on >= 0.5):
+                return {"ok": False, "msg": "The console did not confirm the EQ switch."}
+            self.eq["pushed"]["bypassed"] = not on
+            return {"ok": True, "msg": "Output EQ switched %s on the console." % ("in" if on else "out")}
+
+        r = self._osc_run(run)
+        self.bump()
+        return r
+
+    # ------------------------------------------------------------- alignment
+    def _align_pct(self, an, j):
+        if j["stage"] == "settle":
+            return int(30 * min(1.0, (an.written - j["t0"]) / (ALIGN_SETTLE * an.sr)))
+        if j["stage"] == "delay":
+            return 35
+        return 40 + int(60 * min(1.0, min(t["cnt"] for t in an.tiers) / float(ALIGN_FRAMES)))
+
+    def _align_fail(self, msg):
+        self.al["job"] = None
+        self.al["error"] = msg
+        if self.an is not None:
+            self.an.track_hold = False
+        self.ver += 1
+
+    def _align_step(self):
+        """Runs on the audio thread: settle, lock the delay, average, capture."""
+        an, j = self.an, self.al["job"]
+        if an.written - j["t0"] > 45 * an.sr:
+            return self._align_fail("That took too long. Check that signal is playing and try again.")
+        if j["stage"] == "settle":
+            if an.written - j["t0"] >= ALIGN_SETTLE * an.sr:
+                an.delay_result = None
+                an.delay_pending = True
+                j["stage"] = "delay"
+        elif j["stage"] == "delay":
+            r = an.delay_result
+            if r is None:
+                return
+            j["locked"] = bool(r["ok"])
+            if not r["ok"]:
+                other = self.al["b" if j["slot"] == "a" else "a"]
+                if other is not None:
+                    an.delay = int(other["delay"])
+                an.reset_tf()
+            j["stage"] = "avg"
+        elif min(t["cnt"] for t in an.tiers) >= ALIGN_FRAMES:
+            tf = an.tf_snapshot(48)
+            name = self.s["align"][j["slot"] + "_name"]
+            lo = dsp.GRID < 250
+            q_lo = float(np.nanmean(np.where(np.isfinite(tf["coh"]), tf["coh"], 0.0)[lo]))
+            if max(tf["quality"], q_lo) < 0.3:
+                return self._align_fail("No usable signal from %s (coherence %d%%). Check that it is unmuted and that "
+                                        "test signal is playing." % (name, round(100 * max(tf["quality"], q_lo))))
+            self.al[j["slot"]] = {"mag": arr(tf["mag"], 2), "phase": arr(tf["phase"], 1), "coh": arr(tf["coh"], 3),
+                                  "delay": int(an.delay), "sr": an.sr, "locked": j["locked"],
+                                  "quality": round(max(tf["quality"], q_lo), 3), "time": time.strftime("%H:%M")}
+            self.al["job"] = None
+            self.al["error"] = None
+            an.track_hold = False
+            self._align_solve()
+            self.ver += 1
+
+    def _align_solve(self):
+        a, b = self.al["a"], self.al["b"]
+        self.al["result"] = None
+        if not a or not b:
+            return
+        if a["sr"] != b["sr"]:
+            self.al["error"] = "The two captures used different sample rates. Measure both again."
+            return
+        caps = [{"mag": from_list(c["mag"]), "phase": from_list(c["phase"]), "coh": from_list(c["coh"]),
+                 "delay": c["delay"], "sr": c["sr"], "locked": c["locked"]} for c in (a, b)]
+        r = align.solve(caps[0], caps[1])
+        if not r["ok"]:
+            self.al["error"] = r["msg"]
+            return
+        out = {}
+        for k, v in r.items():
+            if isinstance(v, np.ndarray):
+                out[k] = arr(v, 3 if k.startswith("coh") else 2)
+            elif isinstance(v, float):
+                out[k] = round(v, 3)
+            else:
+                out[k] = v
+        self.al["result"] = out
+
+    def _align_view(self):
+        """Display copies of the captures and the prediction, lightly smoothed. Rebuilt only when they change."""
+        al = self.al
+        key = (al["a"], al["b"], al["result"])          # held by reference, so a new capture can never look like an old one
+        old = al.get("view_key")
+        if old is not None and all(x is y for x, y in zip(old, key)):
+            return al["view"]
+        v = {}
+        r = al["result"]
+        sm = lambda x: arr(dsp.smooth_db(from_list(x), 1.0 / 12.0), 2)
+        if r:
+            for k in ("a", "b", "sum_now", "sum_fix"):
+                v[k] = sm(r[k])
+            for k in ("ph_a", "ph_b", "ph_b_fix", "coh_a", "coh_b"):
+                v[k] = r[k]
+        else:
+            for k in ("a", "b"):
+                if al[k]:
+                    v[k] = sm(al[k]["mag"])
+                    v["coh_" + k] = al[k]["coh"]
+                    v["ph_" + k] = [p if (p is not None and (c or 0) >= 0.3) else None
+                                    for p, c in zip(al[k]["phase"], al[k]["coh"])]
+        al["view"], al["view_key"] = v, key
+        return v
+
+    def _align_static(self):
+        al = self.al
+        meta = lambda c: ({"time": c["time"], "quality": c["quality"], "locked": c["locked"],
+                           "delay_ms": round(1000.0 * c["delay"] / c["sr"], 2)} if c else None)
+        r = al["result"]
+        return dict(self.s["align"], a=meta(al["a"]), b=meta(al["b"]), error=al["error"], view=self._align_view(),
+                    result=({k: v for k, v in r.items() if not isinstance(v, list)} if r else None))
+
+    def c_align_measure(self, d):
+        slot = d.get("slot")
+        if slot not in ("a", "b"):
+            return {"ok": False, "msg": "Unknown system."}
+        with self.lock:
+            an = self.an
+            if an is None or self.mode == "stopped":
+                return {"ok": False, "msg": "Start the input first."}
+            if an.meas == an.ref:
+                return {"ok": False, "msg": "Pick different measurement and reference channels first."}
+            if self.mode == "demo" and self.engine.demo is not None:
+                self.engine.demo.configure(system=slot)
+            an.track_hold = True
+            self.al["error"] = None
+            self.al["job"] = {"slot": slot, "stage": "settle", "t0": an.written, "locked": False}
+        self.ver += 1
+        return {"ok": True}
+
+    def c_align_cancel(self, d):
+        with self.lock:
+            self.al["job"] = None
+            if self.an is not None:
+                self.an.track_hold = False
+        self.ver += 1
+
+    def c_align_clear(self, d):
+        with self.lock:
+            self.al.update(a=None, b=None, result=None, job=None, error=None)
+            if self.an is not None:
+                self.an.track_hold = False
+        self.ver += 1
+
     # ---------------------------------------------------------------- report
     def report(self):
         con = self.console()
-        L = ["TuneTrace report  -  %s" % time.strftime("%Y-%m-%d %H:%M"), "Console profile: %s" % con["label"], ""]
+        L = ["Mixx Trace report  -  %s" % time.strftime("%Y-%m-%d %H:%M"), "Console profile: %s" % con["label"], ""]
         with self.lock:
             an = self.an if self.mode != "stopped" else None
             L.append("SYSTEM EQ (output / matrix EQ)")
@@ -712,8 +1136,18 @@ class App:
                     L.append("  Band %d   Bell   %-9s  %+5.1f dB   Q %.1f" % (i + 1, dsp.fmt_hz(b["f"]), b["gain"], b["q"]))
                 if not e["bands"]:
                     L.append("  Already within 1 dB of the target. No EQ suggested.")
+                if e.get("pushed"):
+                    L.append("  Sent to the console: %s at %s" % (e["pushed"]["target"], e["pushed"]["time"]))
             else:
                 L.append("  No EQ fitted yet.")
+            r = self.al["result"]
+            if r and r.get("ok"):
+                al = self.s["align"]
+                L += ["", "ALIGNMENT (%s to %s)" % (al["b_name"], al["a_name"]),
+                      "  Delay %s by %.2f ms (%.2f m / %.1f ft)" % (al[r["who"] + "_name"], r["ms"], r["m"], r["ft"]),
+                      "  %s polarity: %s" % (al["b_name"], "invert" if r["invert"] else "leave as it is"),
+                      "  Judged over %s-%s: %+.1f dB more summed level than now" % (
+                          dsp.fmt_hz(r["f_lo"]), dsp.fmt_hz(r["f_hi"]), r["gain"])]
             L += ["", "PROBLEM FREQUENCIES (measurement mic)"]
             evs = self._events(an) if an else []
             if not evs:

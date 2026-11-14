@@ -209,6 +209,10 @@ class Analyzer:
         # delay finder
         self.delay_pending = False
         self.delay_result = None
+        self.track = False          # keep the delay locked on by re-checking it every few seconds
+        self.track_hold = False
+        self.track_moves = 0
+        self._track_next = 0
 
     # ------------------------------------------------------------------ ingest
     def ingest(self, block):
@@ -239,6 +243,9 @@ class Analyzer:
         self._proc_scan()
         if self.delay_pending:
             self._find_delay()
+        elif self.track and not self.track_hold and self.meas != self.ref and self.written >= self._track_next:
+            self._track_next = self.written + int(4.0 * self.sr)
+            self._track_delay()
 
     def _read(self, ch, end, n):
         start = end - n
@@ -328,11 +335,11 @@ class Analyzer:
         return {"mag": mag, "phase": ph, "coh": coh, "quality": quality, "frames": int(cnt)}
 
     # ------------------------------------------------------------ delay finder
-    def _find_delay(self):
+    def _measure_delay(self):
+        """Arrival time of the measurement signal relative to the reference, from the last few seconds."""
         n = 65536 * self.scale
         if self.written < 2 * n:
-            return
-        self.delay_pending = False
+            return None
         sxy = np.zeros(n // 2 + 1, dtype=np.complex128)
         sxx = np.zeros(n // 2 + 1)
         for j in range(3):
@@ -349,8 +356,7 @@ class Analyzer:
         wgt = ((f >= 60) & (f <= 12000)).astype(np.float64)
         med = float(np.median(sxx[wgt > 0])) if sxx.any() else 0.0
         if med <= 0:
-            self.delay_result = {"ok": False, "msg": "No reference signal. Check the reference channel."}
-            return
+            return {"ok": False, "msg": "No reference signal. Check the reference channel."}
         h = np.fft.irfft(wgt * sxy / (sxx + 0.01 * med), n)
         idx = int(np.argmax(np.abs(h)))
         pk = h[idx]
@@ -358,12 +364,30 @@ class Analyzer:
         conf = 20 * math.log10(abs(pk) / max(rms, 1e-30))
         d = idx if idx < n // 2 else idx - n
         ok = conf >= 20.0
-        self.delay_result = {"ok": ok, "samples": d, "ms": 1000.0 * d / self.sr,
-                             "m": 343.0 * d / self.sr, "polarity": 1 if pk >= 0 else -1,
-                             "conf": conf,
-                             "msg": "" if ok else "Weak correlation. Raise the signal level or check routing."}
-        if ok:
-            self.delay = d
+        return {"ok": ok, "samples": d, "ms": 1000.0 * d / self.sr,
+                "m": 343.0 * d / self.sr, "polarity": 1 if pk >= 0 else -1,
+                "conf": conf,
+                "msg": "" if ok else "Weak correlation. Raise the signal level or check routing."}
+
+    def _find_delay(self):
+        res = self._measure_delay()
+        if res is None:
+            return
+        self.delay_pending = False
+        self.delay_result = res
+        if res["ok"]:
+            self.delay = res["samples"]
+            self.reset_tf()
+
+    def _track_delay(self):
+        """Follow the delay as the mic moves. Only a confident, real change restarts the average."""
+        res = self._measure_delay()
+        if res is None or not res["ok"]:
+            return
+        if abs(res["samples"] - self.delay) >= 3:
+            self.delay = res["samples"]
+            self.delay_result = res
+            self.track_moves += 1
             self.reset_tf()
 
     # --------------------------------------------------------- RTA + detection

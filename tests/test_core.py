@@ -5,6 +5,9 @@ No audio hardware is needed: the live-input path is exercised through a stand-in
 """
 import json
 import math
+import os
+import socket
+import tempfile
 import threading
 import time
 import unittest
@@ -13,7 +16,8 @@ import urllib.request
 
 import numpy as np
 
-from tt import advisor, dsp, engine, eq
+import tt.app as app_mod
+from tt import advisor, align, dsp, engine, eq, osc
 from tt.analyzer import Analyzer
 from tt.app import App
 from tt.engine import DemoSource
@@ -400,7 +404,7 @@ class LivePathAndServer(unittest.TestCase):
         bad = urllib.request.Request(self.base + "/api/cmd", b"{not json", {"Content-Type": "application/json"})
         self.assertEqual(self.status(bad), 400)
         self.assertEqual(self.status(urllib.request.Request(self.base + "/api/frame", headers={"Host": "evil.example"})), 403)
-        self.assertIn(self.status(self.base + "/../tunetrace.py"), (403, 404))
+        self.assertIn(self.status(self.base + "/../mixxtrace.py"), (403, 404))
         self.assertEqual(self.status(self.base + "/"), 200)
 
     def status(self, req):
@@ -410,6 +414,521 @@ class LivePathAndServer(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             exc.close()
             return exc.code
+
+
+# ------------------------------------------------------------ console remote and alignment
+def demo_app():
+    """An app on the demo signal, driven block by block so the tests do not wait for real time."""
+    app = App(demo_only=True, persist=False)
+    src = DemoSource()
+    app.engine.demo, app.engine.mode, app.engine.sr, app.engine.nch = src, "demo", float(SR), len(DemoSource.CHANNELS)
+    app._new_analyzer()
+    app._sync_demo()
+    return app, src
+
+
+def play(app, src, seconds):
+    for _ in range(int(seconds * SR / DemoSource.BLOCK)):
+        app._on_block(src.next_block())
+
+
+def measure(app, src, seconds=8.0):
+    """Lock the delay and average a fresh transfer function at full resolution."""
+    play(app, src, 3.0)
+    app.command({"cmd": "find_delay"})
+    play(app, src, seconds)
+    return app.an.tf_snapshot(48)
+
+
+def writes(console):
+    return [(a, v) for a, v in console.log if not a.endswith("/?")]
+
+
+class FakeConsole:
+    """A stand-in desk on the loopback network: real UDP, real OSC packets, answers like the console does."""
+
+    def __init__(self, console=None):
+        self.sim = console or osc.SimConsole("Test desk")
+        self.times = []
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.settimeout(0.05)
+        self.port = self.sock.getsockname()[1]
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.bind(("127.0.0.1", 0))
+        self.reply_port = probe.getsockname()[1]
+        probe.close()
+        self.run = True
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+
+    def _loop(self):
+        while self.run:
+            try:
+                data, src = self.sock.recvfrom(65535)
+            except OSError:
+                continue
+            self.times.append(time.monotonic())
+            for addr, args in osc.decode(data):
+                for r_addr, r_args in self.sim.handle(addr, args):
+                    self.sock.sendto(osc.encode(r_addr, r_args), (src[0], self.reply_port))
+
+    def close(self):
+        self.run = False
+        self.thread.join(1.0)
+        self.sock.close()
+
+
+class OscCodec(unittest.TestCase):
+    def test_round_trip(self):
+        self.assertEqual(osc.decode(osc.encode("/Aux_Outputs/3/EQ/eq_freq_2", [1250.0])), [("/Aux_Outputs/3/EQ/eq_freq_2", [1250.0])])
+        self.assertEqual(osc.decode(osc.encode("/Console/Name/?")), [("/Console/Name/?", [])])
+        (addr, args), = osc.decode(osc.encode("/x", [-4.5, "Quantum 326", 7]))
+        self.assertEqual((addr, args[1]), ("/x", "Quantum 326"))
+        self.assertAlmostEqual(args[0], -4.5)
+        self.assertAlmostEqual(args[2], 7.0)
+
+    def test_known_packet_layout(self):
+        # address and type tags are null-padded to four bytes; numbers travel as big-endian float32
+        self.assertEqual(osc.encode("/a/b", [1.0]), b"/a/b\x00\x00\x00\x00,f\x00\x00\x3f\x80\x00\x00")
+
+    def test_bundles_and_garbage(self):
+        one, two = osc.encode("/a", [1.0]), osc.encode("/b", [2.0])
+        bundle = b"#bundle\x00" + b"\x00" * 8 + len(one).to_bytes(4, "big") + one + len(two).to_bytes(4, "big") + two
+        self.assertEqual(osc.decode(bundle), [("/a", [1.0]), ("/b", [2.0])])
+        for junk in (b"", b"\x00\x01", b"hello", b"/a\x00\x00,f\x00\x00\x3f", os.urandom(64)):
+            self.assertIsInstance(osc.decode(junk), list)
+
+
+class ConsoleRemote(unittest.TestCase):
+    BANDS = [{"f": 250.0, "gain": -3.5, "q": 2.0}, {"f": 2500.0, "gain": -25.0, "q": 30.0},
+             {"f": 63.0, "gain": 2.0, "q": 1.4}, {"f": 6300.0, "gain": 1.5, "q": 0.9}]
+
+    def setUp(self):
+        self._pace = osc.UdpLink.pace
+        osc.UdpLink.pace = 0.002
+        self.desk = FakeConsole()
+        self.app = App(persist=False)
+        self.cmd = self.app.command
+        self.assertTrue(self.cmd({"cmd": "osc_set", "mode": "udp", "host": "127.0.0.1", "send_port": self.desk.port,
+                                  "listen_port": self.desk.reply_port, "out_type": "Matrix", "out_n": 3})["ok"])
+        self.app.eq = {"bands": [dict(b) for b in self.BANDS]}
+
+    def tearDown(self):
+        osc.UdpLink.pace = self._pace
+        self.desk.close()
+
+    def push(self, what="eq"):
+        pre = self.cmd({"cmd": "osc_preview", "what": what})
+        self.assertTrue(pre["ok"], pre)
+        return pre, self.cmd({"cmd": "osc_push", "token": pre["token"], "confirm": True})
+
+    def test_connection_test_names_the_console(self):
+        r = self.cmd({"cmd": "osc_test"})
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["name"], "Test desk")
+        self.assertEqual(writes(self.desk.sim), [])
+
+    def test_preview_changes_nothing(self):
+        pre = self.cmd({"cmd": "osc_preview", "what": "eq"})
+        self.assertTrue(pre["ok"], pre)
+        self.assertEqual(writes(self.desk.sim), [])
+        self.assertFalse(pre["sim"])
+        self.assertGreater(pre["n"], 0)
+
+    def test_eq_push_sends_exact_values_in_order_and_reads_them_back(self):
+        pre, res = self.push()
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["mismatch"], [])
+        b = "/Matrix_Outputs/3/EQ/"
+        got = [(a, round(v[0], 2)) for a, v in writes(self.desk.sim)]
+        self.assertEqual(got, [
+            (b + "eq_curve_1", 1.0), (b + "eq_freq_1", 6300.0), (b + "eq_Q_1", 0.9), (b + "eq_gain_1", 1.5),     # top band was a shelf
+            (b + "eq_freq_2", 2500.0), (b + "eq_Q_2", 20.0), (b + "eq_gain_2", -18.0),                           # clamped to the console's range
+            (b + "eq_freq_3", 250.0), (b + "eq_Q_3", 2.0), (b + "eq_gain_3", -3.5),
+            (b + "eq_curve_4", 1.0), (b + "eq_freq_4", 63.0), (b + "eq_Q_4", 1.4), (b + "eq_gain_4", 2.0),
+        ])
+        self.assertEqual(res["n"], len(got))
+        self.assertEqual(pre["n"], len(got))
+        for a, _ in self.desk.sim.log:                       # nothing outside the chosen output was touched or even asked
+            self.assertTrue(a.startswith(b) or a.startswith("/Console/"), a)
+        self.assertEqual(self.app.eq["pushed"]["target"], "Matrix 3")
+
+    def test_existing_eq_is_flattened_before_it_moves_and_undo_puts_it_back(self):
+        b = "/Matrix_Outputs/3/EQ/"
+        for a, v in ((b + "eq_gain_3", -6.0), (b + "eq_freq_3", 400.0), (b + "eq_Q_3", 4.0), (b + "eq_in", 0.0)):
+            self.desk.sim.v[a] = v
+        before = dict(self.desk.sim.v)
+        state = self.desk.sim.output("Matrix", 3)
+        pre, res = self.push()
+        self.assertTrue(res["ok"], res)
+        self.assertTrue(any("already has EQ" in w for w in pre["warnings"]), pre["warnings"])
+        w = writes(self.desk.sim)
+        i_flat = w.index((b + "eq_gain_3", [0.0]))
+        self.assertLess(i_flat, [a for a, _ in w].index(b + "eq_freq_3"))
+        self.assertEqual(self.desk.sim.get(b + "eq_in"), 1.0)
+        self.assertTrue(self.app.static()["osc"]["undo"])
+        pre, res = self.push("undo")
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(self.desk.sim.output("Matrix", 3), state)
+        for a, v in before.items():
+            self.assertAlmostEqual(self.desk.sim.get(a), v, places=4, msg=a)
+        for k in (1, 2, 4):
+            self.assertAlmostEqual(self.desk.sim.get(b + "eq_gain_%d" % k), 0.0)
+        self.assertEqual(self.desk.sim.get(b + "eq_curve_1"), 4.0)
+        self.assertIsNone(self.app.static()["osc"]["undo"])
+        self.assertNotIn("pushed", self.app.eq)
+
+    def test_nothing_is_sent_without_a_confirmed_fresh_preview(self):
+        pre = self.cmd({"cmd": "osc_preview", "what": "eq"})
+        for bad in ({"token": pre["token"]}, {"token": pre["token"], "confirm": "yes"}, {"token": "abc", "confirm": True},
+                    {"confirm": True}):
+            self.assertFalse(self.cmd(dict(bad, cmd="osc_push"))["ok"])
+        self.app.osc_plan["made"] -= 121
+        self.assertFalse(self.cmd({"cmd": "osc_push", "token": pre["token"], "confirm": True})["ok"])
+        self.assertFalse(self.cmd({"cmd": "osc_push", "token": pre["token"], "confirm": True})["ok"])   # and it stays dead
+        pre = self.cmd({"cmd": "osc_preview", "what": "eq"})
+        self.cmd({"cmd": "osc_set", "out_n": 5})                                                        # target changed after the preview
+        self.assertFalse(self.cmd({"cmd": "osc_push", "token": pre["token"], "confirm": True})["ok"])
+        self.assertEqual(writes(self.desk.sim), [])
+
+    def test_a_token_works_once(self):
+        pre, res = self.push()
+        self.assertTrue(res["ok"])
+        n = len(writes(self.desk.sim))
+        self.assertFalse(self.cmd({"cmd": "osc_push", "token": pre["token"], "confirm": True})["ok"])
+        self.assertEqual(len(writes(self.desk.sim)), n)
+
+    def test_console_that_does_not_take_a_value_is_reported(self):
+        handle = self.desk.sim.handle
+        self.desk.sim.handle = lambda a, v: [] if "eq_gain_2" in a else handle(a, v)
+        pre = self.cmd({"cmd": "osc_preview", "what": "eq"})
+        self.assertFalse(pre["ok"])                         # band 2 never answered, so no plan is made
+        self.desk.sim.handle = lambda a, v: [] if (a.endswith("eq_gain_2") and v) else handle(a, v)
+        pre, res = self.push()
+        self.assertTrue(res["mismatch"], res)
+        self.assertIn("Band 2 gain", res["msg"])
+
+    def test_only_local_console_addresses_and_safe_ports(self):
+        for host in ("8.8.8.8", "example.com", "224.0.0.1", "0.0.0.0", "::1", "192.168.1.300"):
+            self.assertFalse(self.cmd({"cmd": "osc_set", "host": host})["ok"], host)
+        self.assertEqual(self.app.s["osc"]["host"], "127.0.0.1")
+        for host in ("192.168.1.50", "10.0.0.2", "172.16.4.4", "169.254.10.10"):
+            self.assertTrue(self.cmd({"cmd": "osc_set", "host": host})["ok"], host)
+        for port in (80, 0, 70000, "x"):
+            self.assertFalse(self.cmd({"cmd": "osc_set", "send_port": port})["ok"], port)
+        self.assertFalse(self.cmd({"cmd": "osc_set", "out_type": "Matrix", "out_n": 3, "mode": "off"}) is None)
+        self.assertFalse(self.cmd({"cmd": "osc_preview", "what": "eq"})["ok"])       # remote is off
+
+    def test_silent_console_fails_cleanly_and_quickly(self):
+        self.desk.close()
+        t = time.time()
+        r = self.cmd({"cmd": "osc_test"})
+        self.assertFalse(r["ok"])
+        self.assertIn("did not answer", r["msg"])
+        self.assertLess(time.time() - t, 5.0)
+        self.assertFalse(self.cmd({"cmd": "osc_preview", "what": "eq"})["ok"])
+        self.assertIsNone(self.app.osc_plan)
+
+    def test_wrong_output_number_is_caught_before_anything_is_written(self):
+        self.cmd({"cmd": "osc_set", "out_n": 99})
+        self.desk.sim._default_orig = self.desk.sim._default
+        self.desk.sim._default = lambda a: None if "/99/" in a else self.desk.sim._default_orig(a)
+        pre = self.cmd({"cmd": "osc_preview", "what": "eq"})
+        self.assertFalse(pre["ok"])
+        self.assertIn("Matrix 99", pre["msg"])
+        self.assertEqual(writes(self.desk.sim), [])
+
+    def test_messages_are_paced(self):
+        osc.UdpLink.pace = self._pace
+        self.assertGreaterEqual(self._pace, 0.1)
+        self.cmd({"cmd": "osc_test"})
+        self.cmd({"cmd": "osc_test"})                         # a second conversation straight after the first
+        with osc.Client(self.app._link()) as cli:
+            for _ in range(3):
+                cli.query("/Console/Name")
+        gaps = np.diff(self.desk.times)
+        self.assertEqual(len(gaps), 4)
+        self.assertGreaterEqual(float(np.min(gaps)), 0.09, gaps)
+
+
+class FourBandConsole(unittest.TestCase):
+    def test_fit_is_cut_to_four_bands_when_the_console_only_answers_for_four(self):
+        app, src = demo_app()
+        app.sim = osc.SimConsole(bands=4)
+        measure(app, src)
+        app.command({"cmd": "eq_refit", "bands": 8})
+        self.assertGreater(len(app.eq["bands"]), 4)
+        pre = app.command({"cmd": "osc_preview", "what": "eq"})
+        self.assertFalse(pre["ok"])
+        self.assertEqual(pre["refit"], 4)
+        self.assertEqual(writes(app.sim), [])
+        self.assertTrue(app.command({"cmd": "eq_refit", "bands": 4})["ok"])
+        pre = app.command({"cmd": "osc_preview", "what": "eq"})
+        self.assertTrue(pre["ok"], pre)
+        self.assertTrue(app.command({"cmd": "osc_push", "token": pre["token"], "confirm": True})["ok"])
+        self.assertFalse(any(a.rsplit("_", 1)[-1] in "5678" for a, _ in writes(app.sim)))
+
+
+class PushedEqIsWhatWasPredicted(unittest.TestCase):
+    def test_measuring_again_after_the_push_matches_the_prediction(self):
+        app, src = demo_app()
+        tf = measure(app, src)
+        self.assertTrue(app.command({"cmd": "auto_eq"})["ok"])
+        e = app.eq
+        pre = app.command({"cmd": "osc_preview", "what": "eq"})
+        self.assertTrue(pre["ok"] and pre["sim"], pre)
+        res = app.command({"cmd": "osc_push", "token": pre["token"], "confirm": True})
+        self.assertTrue(res["ok"] and not res["mismatch"], res)
+        after = measure(app, src)
+        self.assertTrue(app.command({"cmd": "osc_eq_in", "on": False})["ok"])
+        out = measure(app, src)
+        # compare only where every one of the three measurements trusted itself
+        sel = ((dsp.GRID >= max(e["f_lo"], 60)) & (dsp.GRID <= min(e["f_hi"], 12000))
+               & (np.minimum(np.minimum(tf["coh"], after["coh"]), out["coh"]) > 0.8))
+        self.assertGreater(int(sel.sum()), 250)
+        change = after["mag"] - tf["mag"]
+        want = np.array(e["curve"], dtype=float)
+        self.assertLess(float(np.max(np.abs(change[sel] - want[sel]))), 0.5)
+        # switching the output EQ out on the console brings the original response back
+        self.assertLess(float(np.max(np.abs((out["mag"] - tf["mag"])[sel]))), 0.3)
+        self.assertTrue(app.static()["eq"]["pushed"]["bypassed"])
+
+
+def two_way(order, sub_early_ms, invert_sub=False, main_gain=1.0):
+    """Ideal crossover at 100 Hz measured one side at a time: captures with a known right answer."""
+    g = dsp.GRID
+    q = 0.707 if order == 4 else 0.5
+    n = 2 if order == 4 else 1
+    hp = dsp.chain_response([("hp", 100, q, 0)] * n, g, SR) * main_gain
+    lp = dsp.chain_response([("lp", 100, q, 0)] * n, g, SR) * (-1 if invert_sub else 1)
+    lp = lp * np.exp(2j * np.pi * g * sub_early_ms / 1000.0)
+    cap = lambda h: {"mag": 20 * np.log10(np.abs(h)), "phase": np.degrees(np.angle(h)), "coh": np.ones(len(g)),
+                     "delay": 1200, "sr": float(SR), "locked": True}
+    return cap(hp), cap(lp)
+
+
+class Alignment(unittest.TestCase):
+    def test_early_subs_get_exactly_their_lead_as_delay(self):
+        for ms in (0.5, 4.0, 11.0):
+            r = align.solve(*two_way(4, ms))
+            self.assertTrue(r["ok"])
+            self.assertEqual((r["who"], r["invert"]), ("b", False))
+            self.assertAlmostEqual(r["ms"], ms, delta=0.03)
+            self.assertLess(r["short"], 0.05)                 # a fourth-order crossover sums perfectly once in time
+
+    def test_late_subs_put_the_delay_on_the_mains(self):
+        r = align.solve(*two_way(4, -6.0))
+        self.assertEqual((r["who"], r["invert"]), ("a", False))
+        self.assertAlmostEqual(r["ms"], 6.0, delta=0.03)
+
+    def test_polarity_is_flipped_only_when_the_systems_need_it(self):
+        r = align.solve(*two_way(2, 4.0))                     # second-order sides are 180 degrees apart by design
+        self.assertTrue(r["invert"])
+        self.assertAlmostEqual(r["ms"], 4.0, delta=0.05)
+        r = align.solve(*two_way(2, 4.0, invert_sub=True))    # already flipped: leave it alone
+        self.assertFalse(r["invert"])
+        self.assertAlmostEqual(r["ms"], 4.0, delta=0.05)
+        self.assertIsNone(r["alt"])
+        r = align.solve(*two_way(4, 4.0, invert_sub=True))    # a miswired sub on an in-phase crossover
+        self.assertTrue(r["invert"])
+        self.assertAlmostEqual(r["ms"], 4.0, delta=0.05)
+        # across this narrow band half a cycle of delay does nearly as well, and the result says so
+        self.assertFalse(r["alt"]["invert"])
+        self.assertIn((r["alt"]["who"], round(r["alt"]["ms"])), (("b", 9), ("a", 1)))
+        self.assertLess(r["alt"]["worse"], 0.5)
+
+    def test_different_analyzer_delays_are_accounted_for(self):
+        a, b = two_way(4, 0.0)
+        b["delay"] = 1200 - 192                               # the analyzer already removed 4 ms less from the subs
+        r = align.solve(a, b)
+        self.assertEqual(r["who"], "b")
+        self.assertAlmostEqual(r["ms"], 4.0, delta=0.03)
+
+    def test_refuses_when_the_systems_do_not_overlap(self):
+        a, b = two_way(4, 0.0)
+        b["coh"] = np.where(dsp.GRID > 60, 0.1, 1.0)
+        self.assertFalse(align.solve(a, b)["ok"])
+        a, b = two_way(4, 0.0, main_gain=0.01)
+        b["mag"] = np.where(dsp.GRID > 50, -200.0, b["mag"])
+        self.assertFalse(align.solve(a, b)["ok"])
+
+    def run_job(self, app, src, slot):
+        self.assertTrue(app.command({"cmd": "align_measure", "slot": slot})["ok"])
+        for _ in range(60):
+            if not app.al["job"]:
+                break
+            play(app, src, 1.0)
+        self.assertIsNone(app.al["job"])
+        self.assertIsNone(app.al["error"])
+
+    def test_demo_pa_end_to_end_through_the_console(self):
+        app, src = demo_app()
+        self.run_job(app, src, "a")
+        self.run_job(app, src, "b")
+        r = app.al["result"]
+        self.assertTrue(r and r["ok"])
+        # The demo mains lag their own crossover, so the subs line up best delayed and flipped: with that the two
+        # phase traces lie on top of each other through the whole crossover. The plain-delay answer is offered too.
+        self.assertEqual((r["who"], r["invert"]), ("b", True))
+        self.assertEqual((r["alt"]["who"], r["alt"]["invert"]), ("b", False))
+        self.assertLess(r["alt"]["ms"], r["ms"])
+        g = dsp.GRID
+        pa, pb = app_mod.from_list(r["ph_a"]), app_mod.from_list(r["ph_b_fix"])
+        near = (g > 65) & (g < 150)
+        self.assertLess(float(np.max(np.abs((pa[near] - pb[near] + 180) % 360 - 180))), 25.0)
+        xo = (g > 60) & (g < 160)
+        now, fix = app_mod.from_list(r["sum_now"]), app_mod.from_list(r["sum_fix"])
+        self.assertLess(float(np.min(now[xo])), float(np.min(fix[xo])) - 6.0)      # there is a hole at the crossover today
+        # the answer is the best there is: no other delay or polarity gives more level through the crossover
+        f, w = src._f, 2 * np.pi * g
+        ha, hb = src._path("a", 0), src._path("b", 0, DemoSource.SUB_EARLY)
+        ca = np.interp(g, f, ha.real) + 1j * np.interp(g, f, ha.imag)
+        cb = np.interp(g, f, hb.real) + 1j * np.interp(g, f, hb.imag)
+        band = (g >= r["f_lo"]) & (g <= r["f_hi"])
+        power = lambda x, pol: float(np.mean(np.abs(ca[band] + pol * cb[band] * np.exp(-1j * w[band] * x / 1000.0)) ** 2))
+        best = max(power(x, pol) for x in np.arange(-15, 15.01, 0.02) for pol in (1, -1))
+        self.assertLess(10 * math.log10(best / power(r["ms"], -1)), 0.1)
+        # what the Align tab is given to draw: smoothed copies of the traces, and a result without the raw lists
+        st = app.static()["align"]
+        self.assertFalse([k for k, v in st["result"].items() if isinstance(v, list)])
+        for k in ("a", "b", "sum_now", "sum_fix", "ph_a", "ph_b", "ph_b_fix"):
+            self.assertEqual(len(st["view"][k]), len(g), k)
+        self.assertEqual(st["result"]["ms"], r["ms"])
+        self.assertIsNone(st["result"].get("pushed"))
+        json.dumps(st)
+        # send it to the simulated console, then measure both systems together
+        pre = app.command({"cmd": "osc_preview", "what": "align"})
+        self.assertTrue(pre["ok"], pre)
+        self.assertEqual([x["label"] for x in pre["rows"]],
+                         ["Subs (Matrix 2) delay", "Subs (Matrix 2) delay on", "Subs (Matrix 2) polarity"])
+        self.assertTrue(app.command({"cmd": "osc_push", "token": pre["token"], "confirm": True})["ok"])
+        self.assertAlmostEqual(app.sim.get("/Matrix_Outputs/2/Channel_Delay/delay"), r["ms"] / 1000.0, places=4)
+        self.assertEqual(app.sim.get("/Matrix_Outputs/2/Channel_Delay/delay_on"), 1.0)
+        self.assertEqual(app.sim.get("/Matrix_Outputs/2/Buss_Trim/phase"), 1.0)
+        self.assertEqual(len(writes(app.sim)), 3)
+        self.assertTrue(app.command({"cmd": "demo_system", "system": "ab"})["ok"])
+        tf = measure(app, src)
+        sel = (g > 40) & (g < 400) & (tf["coh"] > 0.8)
+        self.assertLess(float(np.max(np.abs(tf["mag"][sel] - fix[sel]))), 0.6)
+        # sending the same correction twice would double the delay
+        again = app.command({"cmd": "osc_preview", "what": "align"})
+        self.assertFalse(again["ok"])
+        self.assertIn("already sent", again["msg"])
+        # undo takes the delay off again
+        pre = app.command({"cmd": "osc_preview", "what": "undo"})
+        self.assertTrue(app.command({"cmd": "osc_push", "token": pre["token"], "confirm": True})["ok"])
+        self.assertEqual(app.sim.output("Matrix", 2), {"eq": [], "delay": 0.0, "inv": False})
+
+    def test_order_of_the_two_captures_does_not_matter(self):
+        app, src = demo_app()
+        self.run_job(app, src, "a")
+        self.run_job(app, src, "b")
+        first = app.al["result"]
+        app.command({"cmd": "align_clear"})
+        self.assertIsNone(app.al["result"])
+        self.run_job(app, src, "b")
+        self.run_job(app, src, "a")
+        second = app.al["result"]
+        self.assertEqual((second["who"], second["invert"]), (first["who"], first["invert"]))
+        self.assertAlmostEqual(second["ms"], first["ms"], delta=0.15)
+
+    def test_existing_console_delay_is_added_to_not_replaced(self):
+        app, src = demo_app()
+        app.sim.v["/Matrix_Outputs/2/Channel_Delay/delay"] = 0.010
+        app.sim.v["/Matrix_Outputs/2/Channel_Delay/delay_on"] = 1.0
+        app._sync_demo()
+        self.run_job(app, src, "a")
+        self.run_job(app, src, "b")
+        r = app.al["result"]                                   # the subs are now 10 - 6 = 4 ms late
+        pre = app.command({"cmd": "osc_preview", "what": "align"})
+        self.assertTrue(pre["ok"], pre)
+        self.assertTrue(app.command({"cmd": "osc_push", "token": pre["token"], "confirm": True})["ok"])
+        d_a = app.sim.get("/Matrix_Outputs/1/Channel_Delay/delay")
+        d_b = app.sim.get("/Matrix_Outputs/2/Channel_Delay/delay")
+        self.assertAlmostEqual(d_b - d_a, 0.010 + r["offset_ms"] / 1000.0, places=4)
+        self.assertGreaterEqual(d_b, 0.010 - 1e-6)             # never shortened, only added to
+        if r["who"] == "b":
+            self.assertTrue(any("already has" in w for w in pre["warnings"]), pre["warnings"])
+        # and it lands on the same total as the run that started from zero: about 9.4 ms on the subs
+        self.assertAlmostEqual(1000 * (d_b - d_a), 9.44, delta=0.3)
+
+    def test_muted_system_is_reported_not_guessed(self):
+        app, src = demo_app()
+        self.run_job(app, src, "a")
+        src._h["b"] = src._h["b"] * 0.0
+        self.assertTrue(app.command({"cmd": "align_measure", "slot": "b"})["ok"])
+        for _ in range(60):
+            if not app.al["job"]:
+                break
+            play(app, src, 1.0)
+        self.assertIsNone(app.al["result"])
+        self.assertTrue(app.al["error"])
+
+
+class DelayTracking(unittest.TestCase):
+    def test_delay_follows_the_mic_when_tracking_is_on(self):
+        app, src = demo_app()
+        measure(app, src, 4.0)
+        self.assertLessEqual(abs(app.an.delay - DemoSource.POSITIONS[0][0]), 1)
+        app.command({"cmd": "demo_move"})
+        play(app, src, 12.0)
+        self.assertLessEqual(abs(app.an.delay - DemoSource.POSITIONS[0][0]), 1)      # off: stays where it was put
+        self.assertTrue(app.command({"cmd": "set", "track": True})["ok"])
+        play(app, src, 12.0)
+        self.assertLessEqual(abs(app.an.delay - DemoSource.POSITIONS[1][0]), 1)
+        self.assertEqual(app.an.track_moves, 1)
+        play(app, src, 20.0)                                                         # and it does not hunt once it is there
+        self.assertEqual(app.an.track_moves, 1)
+        self.assertGreater(app.an.tf_snapshot(48)["quality"], 0.8)
+
+
+class Rename(unittest.TestCase):
+    def test_sessions_saved_under_the_old_name_still_open(self):
+        app = App(persist=False)
+        old = dict(app._session(), app="TuneTrace")
+        old["settings"] = dict(old["settings"], sens="high")
+        for k in ("osc", "align", "track"):                    # a 0.1 session has none of the new settings
+            old["settings"].pop(k, None)
+        fresh = App(persist=False)
+        self.assertTrue(fresh.command({"cmd": "session_import", "data": old})["ok"])
+        self.assertEqual(fresh.s["sens"], "high")
+        self.assertEqual(fresh.s["osc"]["mode"], "off")
+        self.assertEqual(fresh._session()["app"], "Mixx Trace")
+        self.assertFalse(fresh.command({"cmd": "session_import", "data": dict(old, app="Something else")})["ok"])
+
+    def test_old_session_folder_is_read_once_then_saved_under_the_new_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            new_dir, old_file = os.path.join(tmp, ".mixxtrace"), os.path.join(tmp, ".tunetrace", "session.json")
+            os.makedirs(os.path.dirname(old_file))
+            src = App(persist=False)
+            src.s["sens"] = "low"
+            with open(old_file, "w", encoding="utf-8") as fh:
+                json.dump(dict(src._session(), app="TuneTrace"), fh)
+            keep = (app_mod.SESSION_DIR, app_mod.SESSION_FILE, app_mod.OLD_SESSION_FILE)
+            app_mod.SESSION_DIR, app_mod.SESSION_FILE, app_mod.OLD_SESSION_FILE = new_dir, os.path.join(new_dir, "session.json"), old_file
+            try:
+                app = App()
+                self.assertEqual(app.s["sens"], "low")
+                app.command({"cmd": "set", "sens": "high"})
+                self.assertTrue(os.path.exists(app_mod.SESSION_FILE))
+                self.assertEqual(App().s["sens"], "high")
+                with open(old_file, encoding="utf-8") as fh:
+                    self.assertEqual(json.load(fh)["settings"]["sens"], "low")      # the old file is left alone
+            finally:
+                app_mod.SESSION_DIR, app_mod.SESSION_FILE, app_mod.OLD_SESSION_FILE = keep
+
+    def test_console_remote_settings_never_arrive_switched_on_from_a_file(self):
+        app = App(persist=False)
+        data = app._session()
+        data["settings"]["osc"] = dict(data["settings"]["osc"], mode="udp", host="8.8.8.8")
+        fresh = App(persist=False)
+        fresh.command({"cmd": "session_import", "data": data})
+        self.assertEqual((fresh.s["osc"]["mode"], fresh.s["osc"]["host"]), ("off", ""))
+        fresh.command({"cmd": "osc_set", "mode": "udp", "host": "192.168.1.20"})
+        data["settings"]["osc"]["host"] = "192.168.1.99"      # even a plausible address does not replace the one set here
+        fresh.command({"cmd": "session_import", "data": data})
+        self.assertEqual((fresh.s["osc"]["mode"], fresh.s["osc"]["host"]), ("udp", "192.168.1.20"))
 
 
 if __name__ == "__main__":

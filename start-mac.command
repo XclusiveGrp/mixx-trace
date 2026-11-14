@@ -1,5 +1,5 @@
 #!/bin/bash
-# TuneTrace launcher for macOS (also works on Linux). Double-click it, or run it from Terminal.
+# Mixx Trace launcher for macOS (also works on Linux). Double-click it, or run it from Terminal.
 cd "$(dirname "$0")" || exit 1
 
 PY=""
@@ -14,7 +14,7 @@ if [ -z "$PY" ]; then
 fi
 
 if [ ! -x .venv/bin/python ]; then
-  echo "First run: setting up TuneTrace (about a minute, needs internet once)..."
+  echo "First run: setting up Mixx Trace (about a minute, needs internet once)..."
   "$PY" -m venv .venv || { echo "Could not create the Python environment."; read -r -p "Press Return to close."; exit 1; }
   .venv/bin/python -m pip install --quiet --upgrade pip
   if ! .venv/bin/python -m pip install --quiet -r requirements.txt; then
@@ -25,5 +25,5 @@ if [ ! -x .venv/bin/python ]; then
   fi
 fi
 
-echo "Starting TuneTrace. Leave this window open while you work; close it to quit."
-exec .venv/bin/python tunetrace.py "$@"
+echo "Starting Mixx Trace. Leave this window open while you work; close it to quit."
+exec .venv/bin/python mixxtrace.py "$@"
