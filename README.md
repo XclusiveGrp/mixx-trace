@@ -21,11 +21,13 @@ packages (numpy and sounddevice), so it needs internet once. After that it works
 **Mac**
 
 1. Unzip the folder somewhere permanent (for example Documents).
-2. Double-click `start-mac.command`. The first time, macOS may refuse because the file came from
-   the internet: right-click it and choose Open, or go to System Settings, Privacy & Security and
-   press Open Anyway.
-3. If you prefer Terminal: type `cd ` (with a space), drag the Mixx Trace folder onto the window,
-   press Return, then run `bash start-mac.command`.
+2. Open Terminal (Command-Space, type Terminal, Return). Type `cd ` (with a space), drag the
+   Mixx Trace folder onto the window, press Return, then run `bash start-mac.command`.
+   The first run takes about a minute.
+3. Double-clicking `start-mac.command` also works, but macOS blocks it the first time because the
+   file came from the internet. Click Done, open System Settings, Privacy & Security, scroll to
+   Security and press Open Anyway (the button is there for about an hour after the blocked
+   attempt). On macOS 14 or earlier you can instead right-click the file and choose Open.
 4. The interface opens at http://127.0.0.1:8765/. The first time you start an input, macOS asks
    whether Terminal may use the microphone: allow it.
 
