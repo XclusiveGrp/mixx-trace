@@ -933,3 +933,161 @@ class Rename(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ------------------------------------------------------------ the desktop (Mac) app
+class FakeWebview:
+    """Stands in for pywebview: 'opens' a window, lets the test look at the page, then 'closes' it."""
+
+    def __init__(self, while_open=None, fail=False):
+        self.settings, self.windows, self.while_open, self.fail = {}, [], while_open, fail
+
+    def create_window(self, title, url, **kw):
+        self.windows.append((title, url, kw))
+
+    def start(self):
+        if self.fail:
+            raise RuntimeError("no display")
+        if self.while_open:
+            self.while_open(self.windows[0][1])
+
+
+class DesktopApp(unittest.TestCase):
+    def setUp(self):
+        import sys
+        import mixxtrace_app
+        self.sys, self.m = sys, mixxtrace_app
+        self.tmp = tempfile.TemporaryDirectory()
+        self.keep = (app_mod.SESSION_DIR, app_mod.SESSION_FILE, app_mod.OLD_SESSION_FILE, sys.modules.get("webview"))
+        app_mod.SESSION_DIR = os.path.join(self.tmp.name, ".mixxtrace")
+        app_mod.SESSION_FILE = os.path.join(app_mod.SESSION_DIR, "session.json")
+        app_mod.OLD_SESSION_FILE = os.path.join(self.tmp.name, "none.json")
+
+    def tearDown(self):
+        app_mod.SESSION_DIR, app_mod.SESSION_FILE, app_mod.OLD_SESSION_FILE, wv = self.keep
+        if wv is None:
+            self.sys.modules.pop("webview", None)
+        else:
+            self.sys.modules["webview"] = wv
+        self.tmp.cleanup()
+
+    def test_window_shows_the_running_engine_and_closing_it_shuts_everything_down(self):
+        seen = {}
+
+        def while_open(url):
+            seen["page"] = urllib.request.urlopen(url, timeout=5).read().decode("utf-8")
+            seen["static"] = json.loads(urllib.request.urlopen(url + "api/static", timeout=5).read())
+            time.sleep(0.6)
+            seen["frame"] = json.loads(urllib.request.urlopen(url + "api/frame?view=feedback", timeout=5).read())
+            seen["url"] = url
+
+        fake = FakeWebview(while_open)
+        self.sys.modules["webview"] = fake
+        self.assertEqual(self.m.main(["--port", "0", "--demo"]), 0)
+        title, url, kw = fake.windows[0]
+        self.assertEqual(title, "Mixx Trace")
+        self.assertTrue(url.startswith("http://127.0.0.1:"))
+        self.assertTrue(fake.settings["ALLOW_DOWNLOADS"])
+        self.assertIn("app.js", seen["page"])
+        self.assertTrue(seen["static"]["native"])
+        self.assertEqual(seen["frame"]["status"]["mode"], "demo")
+        with self.assertRaises(OSError):                       # the window closed, so nothing is left listening
+            urllib.request.urlopen(seen["url"], timeout=2)
+
+    def test_a_busy_port_does_not_stop_the_app_from_opening(self):
+        blocker = socket.socket()
+        blocker.bind(("127.0.0.1", 0))
+        blocker.listen(1)
+        try:
+            app = App(persist=False, native=True)
+            httpd, url = self.m.start_server(app, blocker.getsockname()[1])
+            try:
+                self.assertNotEqual(httpd.server_address[1], blocker.getsockname()[1])
+                self.assertEqual(json.loads(urllib.request.urlopen(url + "api/static", timeout=5).read())["native"], True)
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+        finally:
+            blocker.close()
+
+    def test_no_window_falls_back_to_the_browser_instead_of_running_unseen(self):
+        fake, opened, told = FakeWebview(fail=True), [], []
+        self.sys.modules["webview"] = fake
+        keep = (self.m.webbrowser.open, self.m.tell, self.m.sys.platform)
+        self.m.webbrowser.open, self.m.tell = opened.append, lambda msg, button="OK": told.append(msg)
+        self.m.sys.platform = "darwin"                         # on a Mac the dialog is what keeps the engine alive
+        try:
+            self.assertEqual(self.m.main(["--port", "0"]), 0)
+        finally:
+            self.m.webbrowser.open, self.m.tell, self.m.sys.platform = keep
+        self.assertEqual(len(opened), 1)
+        self.assertIn("browser", told[0])
+
+    def test_reports_are_saved_into_downloads_and_nowhere_else(self):
+        app = App(persist=False, native=True)
+        app.downloads = os.path.join(self.tmp.name, "Downloads")
+        r = app.command({"cmd": "save_file", "name": "mixxtrace-report-20261113-2101.txt", "text": "Mixx Trace report\n1 kHz"})
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(os.path.dirname(r["path"]), app.downloads)
+        with open(r["path"], encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "Mixx Trace report\n1 kHz")
+        again = app.command({"cmd": "save_file", "name": "mixxtrace-report-20261113-2101.txt", "text": "second"})
+        self.assertNotEqual(again["path"], r["path"])          # an earlier report is never overwritten
+        with open(r["path"], encoding="utf-8") as fh:
+            self.assertIn("1 kHz", fh.read())
+        for bad in ("../mixxtrace-report-1.txt", "/etc/mixxtrace-x.txt", "mixxtrace-x.command", ".zshrc", "mixxtrace-a/b.txt", ""):
+            res = app.command({"cmd": "save_file", "name": bad, "text": "x"})
+            self.assertFalse(res["ok"], bad)
+        self.assertEqual(sorted(os.listdir(self.tmp.name)), ["Downloads"])
+        self.assertEqual(len(os.listdir(app.downloads)), 2)
+        self.assertFalse(app.command({"cmd": "save_file", "name": "mixxtrace-report-1.txt", "text": 5})["ok"])
+
+    def test_saving_files_is_only_offered_inside_the_desktop_app(self):
+        for app in (App(persist=False), App(demo_only=True, native=True)):
+            self.assertFalse(app.static()["native"])
+            app.downloads = os.path.join(self.tmp.name, "Downloads")
+            self.assertFalse(app.command({"cmd": "save_file", "name": "mixxtrace-report-1.txt", "text": "x"})["ok"])
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "Downloads")))
+
+    def test_another_sites_page_cannot_drive_the_engine(self):
+        app = App(persist=False, native=True)
+        app.downloads = os.path.join(self.tmp.name, "Downloads")
+        httpd, url = self.m.start_server(app, 0)
+
+        def post(origin=None, ctype="application/json"):
+            body = json.dumps({"cmd": "save_file", "name": "mixxtrace-report-1.txt", "text": "x"}).encode()
+            headers = {"Content-Type": ctype}
+            if origin:
+                headers["Origin"] = origin
+            try:
+                with urllib.request.urlopen(urllib.request.Request(url + "api/cmd", body, headers), timeout=5) as r:
+                    return r.status
+            except urllib.error.HTTPError as exc:
+                exc.close()
+                return exc.code
+
+        try:
+            self.assertEqual(post("https://evil.example", "text/plain"), 403)     # a form post from some web page
+            self.assertEqual(post("null"), 403)
+            self.assertFalse(os.path.exists(app.downloads))
+            self.assertEqual(post(url.rstrip("/")), 200)                          # the interface itself
+            self.assertEqual(post("http://localhost:8765"), 200)
+            self.assertEqual(post(), 200)                                         # no browser involved
+            self.assertEqual(len(os.listdir(app.downloads)), 3)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_mac_bundle_recipe_asks_for_microphone_and_network_and_ships_the_interface(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "packaging", "mac", "MixxTrace.spec"), encoding="utf-8") as fh:
+            spec = fh.read()
+        for needed in ("NSMicrophoneUsageDescription", "NSLocalNetworkUsageDescription", '"web"', "mixxtrace_app.py",
+                       "MixxTrace.icns", "console=False"):
+            self.assertIn(needed, spec)
+        with open(os.path.join(root, "packaging", "mac", "MixxTrace.icns"), "rb") as fh:
+            self.assertEqual(fh.read(4), b"icns")
+        with open(os.path.join(root, "build-mac-app.command"), "rb") as fh:
+            script = fh.read()
+        self.assertTrue(script.startswith(b"#!/bin/bash\n"))
+        self.assertNotIn(b"\r", script)                        # Windows line endings would stop it running on a Mac

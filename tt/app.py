@@ -2,6 +2,7 @@
 import json
 import math
 import os
+import re
 import threading
 import time
 
@@ -61,8 +62,10 @@ def parse_cal(text):
 
 
 class App:
-    def __init__(self, demo_only=False, persist=True):
+    def __init__(self, demo_only=False, persist=True, native=False):
         self.lock = threading.RLock()
+        self.native = bool(native) and not demo_only     # running inside the desktop app window
+        self.downloads = os.path.join(os.path.expanduser("~"), "Downloads")
         self.engine = Engine(self._on_block)
         self.gen = Generator()
         self.an = None
@@ -530,7 +533,7 @@ class App:
                                  "gain": v["gain"], "q_max": v["q_max"], "usb_ch": v["usb_ch"], "out_note": v["out_note"]}
                              for k, v in advisor.CONSOLES.items()},
                 "cal": {"name": self.cal["name"]} if self.cal else None,
-                "gen": dict(self.gen.cfg), "demo_only": self.demo_only,
+                "gen": dict(self.gen.cfg), "demo_only": self.demo_only, "native": self.native,
                 "osc": self._osc_static(), "align": self._align_static(),
                 "demo_systems": DemoSource.SYSTEMS,
             }
@@ -732,6 +735,26 @@ class App:
         with self.lock:
             self._apply_to_analyzer()
         self.bump()
+
+    def c_save_file(self, d):
+        """Desktop app only: an app window has no downloads bar, so reports and sessions go straight to Downloads."""
+        if not self.native:
+            return {"ok": False, "msg": "Not available here."}
+        name, text = str(d.get("name") or ""), d.get("text")       # no folders: the pattern allows no slashes
+        if not re.fullmatch(r"mixxtrace-[A-Za-z0-9_-]{1,60}\.(txt|json)", name) or not isinstance(text, str):
+            return {"ok": False, "msg": "That file cannot be saved."}
+        try:
+            os.makedirs(self.downloads, exist_ok=True)
+            stem, ext = os.path.splitext(name)
+            path, n = os.path.join(self.downloads, name), 1
+            while os.path.exists(path):                  # never overwrite an earlier report
+                n += 1
+                path = os.path.join(self.downloads, "%s (%d)%s" % (stem, n, ext))
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(text)
+        except OSError as exc:
+            return {"ok": False, "msg": "Could not save to the Downloads folder: %s" % (exc.strerror or exc)}
+        return {"ok": True, "path": path, "msg": "Saved to your Downloads folder as %s" % os.path.basename(path)}
 
     def c_session_import(self, d):
         self._apply_session(d.get("data"))

@@ -692,6 +692,7 @@
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback); else fallback();
   }
   function download(name, text, type) {
+    if (S.st && S.st.native) { cmd('save_file', { name, text }); return; }     // desktop app: straight to Downloads
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([text], { type: type || 'text/plain' }));
     a.download = name; document.body.appendChild(a); a.click(); a.remove();

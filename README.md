@@ -2,7 +2,7 @@
 
 Feedback finder, system-tuning trace, system alignment and channel advice for live sound. It runs
 on your own computer (macOS or Windows), listens through any audio interface, shows its interface
-in your web browser, and can send the system EQ and alignment delay to a DiGiCo console.
+in your web browser (or in its own window as a Mac app), and can send the system EQ and alignment delay to a DiGiCo console.
 
 | Tab | What it does |
 | --- | --- |
@@ -30,6 +30,38 @@ packages (numpy and sounddevice), so it needs internet once. After that it works
    attempt). On macOS 14 or earlier you can instead right-click the file and choose Open.
 4. The interface opens at http://127.0.0.1:8765/. The first time you start an input, macOS asks
    whether Terminal may use the microphone: allow it.
+
+**Mac app (one icon, no Terminal, no browser)**
+
+You build the app once on your own Mac. A Mac app cannot be built on another kind of computer, and
+one built on your own Mac opens without the "downloaded from the internet" block.
+
+1. Install Python from [python.org/downloads](https://www.python.org/downloads/) if you have not already.
+2. Open Terminal, type `cd ` (with a space), drag the Mixx Trace folder onto the window, press
+   Return, then run `bash build-mac-app.command`. It needs internet and takes a few minutes. It
+   downloads the build tools into the folder, builds `Mixx Trace.app`, checks it, and offers to put
+   it in Applications.
+3. Open Mixx Trace from Applications or Launchpad like any other app, and keep it in the Dock if
+   you like. Closing the window quits it and stops the audio.
+4. The first time you start an input, macOS asks whether Mixx Trace may use the microphone: allow
+   it. If the meters stay flat, switch Mixx Trace on in System Settings, Privacy & Security, Microphone.
+5. The first time you use Console remote on macOS 15 or later, macOS asks whether Mixx Trace may
+   find devices on your local network: allow it (System Settings, Privacy & Security, Local Network).
+
+Good to know:
+
+- Reports and exported sessions are saved straight into your Downloads folder.
+- The app is signed locally, not by Apple. Apple notes that the Local Network permission is only
+  tracked reliably for apps signed with an Apple-issued identity. If the console will not answer
+  from the app, run `bash start-mac.command` instead: programs started from Terminal do not need
+  that permission.
+- After an update, run `bash build-mac-app.command` again. macOS may ask for the microphone again,
+  because a rebuilt app counts as a new one.
+- If the app will not open or misbehaves, the details are in `.mixxtrace/app.log` in your home
+  folder (in Finder: Go, Go to Folder, `~/.mixxtrace`). If the build fails, they are in
+  `build-mac-app.log` in the Mixx Trace folder.
+- The app uses the same engine, session and settings as the Terminal version, so you can switch
+  between them.
 
 **Windows 10 or 11**
 
@@ -193,7 +225,7 @@ whether it is growing. Sensitivity (Low / Normal / High) sets how far a tone mus
 
 ## How it was checked
 
-`python3 -m unittest` (Windows: `py -m unittest`) runs 48 checks against simulated signals with a
+`python3 -m unittest` (Windows: `py -m unittest`) runs 55 checks against simulated signals with a
 known answer: no alarms on 60 s of noise at every sensitivity; growing tones at 125 Hz to 8 kHz
 flagged at the right frequency; held musical notes never called feedback; the transfer function,
 delay and polarity matched against a simulated PA; 96 kHz input; EQ limits; channel advice on a
@@ -201,6 +233,15 @@ simulated 12-channel show; the multichannel input path through a stand-in audio 
 of ideal crossovers with a known answer; and the console remote against a stand-in console over
 real network messages (exact messages and order, limits, preview writes nothing, refusal without
 confirmation, read-back, undo, a console that does not answer).
+
+The Mac app was checked as far as Linux allows: the same build recipe was run on Linux and the
+built program passed its own check (interface files inside, engine answering, demo running, audio
+library and window parts loading, with the Linux audio library supplied by hand); the
+app's start-up code was run with a real app window (pywebview on its Linux window engine, not the
+Mac one), where the interface loaded, the demo ran, and Export session and Report saved into
+Downloads, and closing the window shut everything down; and the Mac versions of every package it
+needs were confirmed to exist (Python 3.12, 3.14 and 3.15 on Apple silicon, 3.13 on Intel). The build
+script itself, the Mac window, the permission prompts and the icon in Finder have not been run on a Mac.
 
 It has **not** yet been run against real audio hardware, a real console, a real room, or on a
 Windows or Mac machine: it was developed and checked on Linux, with care taken over the parts
@@ -212,7 +253,10 @@ that differ between systems. Do a soundcheck with it before relying on it at a s
 mixxtrace.py        start here
 tt/                 analysis (analyzer, eq, align, advisor), audio I/O (engine), console remote (osc),
                     app state, web server
-start-mac.command   double-click launcher for macOS
+start-mac.command   Terminal launcher for macOS (interface in the browser)
+build-mac-app.command   builds Mixx Trace.app on your Mac
+mixxtrace_app.py    what the Mac app runs: the same engine in its own window
+packaging/mac/      build recipe, icon and extra requirements for the Mac app
 start-windows.bat   double-click launcher for Windows
 web/                the interface
 tests/              the checks described above

@@ -1,3 +1,6 @@
 *.bat -text
 *.command text eol=lf
 *.py text eol=lf
+*.icns binary
+*.png binary
+*.spec text eol=lf

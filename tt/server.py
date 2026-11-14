@@ -42,7 +42,15 @@ def make_handler(app):
             if app.demo_only:
                 return True
             host = (self.headers.get("Host") or "").split(":")[0]
-            return host in ("127.0.0.1", "localhost", "[::1]")
+            if host not in ("127.0.0.1", "localhost", "[::1]"):
+                return False
+            origin = self.headers.get("Origin")      # browsers add this when another site's page makes the request
+            if origin is None:
+                return True
+            try:
+                return urlparse(origin).hostname in ("127.0.0.1", "localhost", "::1")
+            except ValueError:
+                return False
 
         def do_OPTIONS(self):
             self._send(204, b"")
