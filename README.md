@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="branding/mixxtrace-logo-on-dark.svg">
+    <img src="branding/mixxtrace-logo-on-light.svg" alt="Mixx Trace" width="380">
+  </picture>
+</p>
+
 # Mixx Trace
 
 Feedback finder, system-tuning trace, system alignment and channel advice for live sound. It runs
@@ -268,6 +275,7 @@ mixxtrace_app.py    what the Mac app runs: the same engine in its own window
 packaging/mac/      build recipe, icon and extra requirements for the Mac app
 start-windows.bat   double-click launcher for Windows
 web/                the interface
+branding/           the Mixx Trace logo files (not covered by the MIT License)
 tests/              the checks described above
 ~/.mixxtrace/       your saved session (traces, EQ, channel names, settings)
 ```
@@ -285,7 +293,7 @@ rely on it at a show.
 
 Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP).
 
-The licence covers the code. The name "Mixx Trace" and its logo are not licensed with it; if you
+The licence covers the code. The name "Mixx Trace" and its logo (see [branding/](branding/README.md)) are not licensed with it; if you
 publish a changed version, give it a different name. The software Mixx Trace relies on is listed
 in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). To report a problem or send a change, see
 [CONTRIBUTING.md](CONTRIBUTING.md).
