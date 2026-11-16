@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 # Builds "Mixx Trace.app" on this Mac. Run it from Terminal:  bash build-mac-app.command
 # (or double-click it). It needs internet the first time and takes a few minutes.
 cd "$(dirname "$0")" || exit 1

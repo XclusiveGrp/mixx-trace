@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 """Small HTTP server: serves the interface and a JSON API. Standard library only."""
 import json
 import mimetypes

@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: MIT
+   Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP) */
 /* Canvas plot on a log-frequency axis. No dependencies. */
 (function () {
   'use strict';

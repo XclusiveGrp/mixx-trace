@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 """Turns channel measurements into console-ready suggestions."""
 import math
 import numpy as np

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 """Time and polarity alignment of two systems (subs to mains, fills to mains) measured one at a time.
 
 Each capture is a transfer function taken with one system soloed, against the same reference and

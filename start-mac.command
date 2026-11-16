@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 # Mixx Trace launcher for macOS (also works on Linux). Double-click it, or run it from Terminal.
 cd "$(dirname "$0")" || exit 1
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 """DiGiCo console remote control over OSC ("DiGiCo Pad" external control). Standard library only.
 
 Nothing in here sends anything by itself. The app builds a plan (a list of writes), shows it to

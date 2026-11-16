@@ -1,4 +1,6 @@
 @echo off
+rem SPDX-License-Identifier: MIT
+rem Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 rem Mixx Trace launcher for Windows. Double-click it.
 cd /d "%~dp0"
 set SD_ENABLE_ASIO=1

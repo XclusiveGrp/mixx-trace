@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: MIT
+   Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP) */
 /* Mixx Trace interface. Talks to the local engine over a small JSON API. */
 (function () {
   'use strict';

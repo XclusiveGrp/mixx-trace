@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 """Shared DSP helpers: log-frequency grid, band sums, filters, formatting."""
 import math
 import numpy as np

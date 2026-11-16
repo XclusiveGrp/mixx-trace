@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 """Mixx Trace as a desktop app: the same engine, shown in its own window instead of a browser tab.
 
 This is what the Mac app starts. It can also be run by hand:  python3 mixxtrace_app.py

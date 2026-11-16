@@ -1,4 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 # PyInstaller recipe for the Mixx Trace Mac app. Run through build-mac-app.command, not by hand.
 import os
 import sys
@@ -56,6 +58,7 @@ if sys.platform == "darwin":
                 "Mixx Trace listens to your audio interface or measurement microphone to analyze the sound system.",
             "NSLocalNetworkUsageDescription":
                 "Mixx Trace sends EQ and delay settings to your mixing console over the local network.",
-            "NSHumanReadableCopyright": "Mixx Trace " + __version__,
+            "NSHumanReadableCopyright":
+                "Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP). MIT License.",
         },
     )

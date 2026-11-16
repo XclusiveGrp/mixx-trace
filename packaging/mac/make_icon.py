@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 """Draws the Mixx Trace app icon (icon-1024.png and MixxTrace.icns). Needs Pillow; only run when the icon changes."""
 import os
 

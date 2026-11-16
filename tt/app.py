@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 """Application state: ties the audio engine, analyzer, EQ fitting and channel advice together."""
 import json
 import math

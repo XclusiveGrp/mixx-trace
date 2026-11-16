@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 """Real-time analysis: transfer function, RTA, feedback detection, channel scan."""
 import math
 import time

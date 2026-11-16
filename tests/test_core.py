@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 """Checks of the analysis core against simulated signals with a known answer.
 
 Run from the project folder:   python3 -m unittest -v

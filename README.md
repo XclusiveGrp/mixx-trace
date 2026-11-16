@@ -257,6 +257,9 @@ that differ between systems. Do a soundcheck with it before relying on it at a s
 
 ```
 mixxtrace.py        start here
+LICENSE             MIT License
+THIRD-PARTY-NOTICES.md   licences of the software Mixx Trace relies on
+CONTRIBUTING.md     how to report problems and send changes
 tt/                 analysis (analyzer, eq, align, advisor), audio I/O (engine), console remote (osc),
                     app state, web server
 start-mac.command   Terminal launcher for macOS (interface in the browser)
@@ -272,3 +275,23 @@ tests/              the checks described above
 The interface is only reachable from this computer (127.0.0.1). The only thing Mixx Trace sends
 over the network is console remote messages, to the console address you entered, when you press
 Send or Test connection.
+
+## License
+
+Mixx Trace is open source under the [MIT License](LICENSE). You may use, copy, change and share
+it, including commercially, as long as the copyright notice and the licence text stay with it.
+It comes with no warranty: check its advice by ear and on a muted or spare output before you
+rely on it at a show.
+
+Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP).
+
+The licence covers the code. The name "Mixx Trace" and its logo are not licensed with it; if you
+publish a changed version, give it a different name. The software Mixx Trace relies on is listed
+in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). To report a problem or send a change, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+DiGiCo and Quantum are trademarks of their owner. Mixx Trace is an independent project and is
+not affiliated with or endorsed by DiGiCo.
+
+Mixx Trace was specified, directed and reviewed by XAVGROUP; most of its code was written with
+an AI assistant.

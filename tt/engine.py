@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 """Audio I/O: live capture through PortAudio (any interface), demo source, signal generator."""
 import math
 import os

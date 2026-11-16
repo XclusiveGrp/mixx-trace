@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 """Target curves and automatic parametric EQ fitting for system tuning."""
 import math
 import numpy as np

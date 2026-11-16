@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Xclusive Audio Visual Group (XAVGROUP)
 """Mixx Trace - feedback finder, system tuning and channel advice for live sound.
 
 Run:  python3 mixxtrace.py          (opens the interface in your browser; on Windows: py mixxtrace.py)
