@@ -7,6 +7,8 @@
 
 # Mixx Trace
 
+> **Requires Python 3.9 or newer.** Install it free from [python.org/downloads](https://www.python.org/downloads/) before you start Mixx Trace (on Windows, tick "Add python.exe to PATH" in the installer). Then follow [Install and start](#install-and-start).
+
 Feedback finder, system-tuning trace, system alignment and channel advice for live sound. It runs
 on your own computer (macOS or Windows), listens through any audio interface, shows its interface
 in your web browser (or in its own window as a Mac app), and can send the system EQ and alignment delay to a DiGiCo console.
